@@ -4,7 +4,7 @@ description: Learn how to self host Triplit using Docker, and how to deploy it t
 
 # Self-hosting Triplit
 
-To enable sync, you need to run a Triplit servezr. The server is a Node.js application that talks to various Triplit clients over WebSockets and HTTP.
+To enable sync, you need to run a Triplit server. The server is a Node.js application that talks to various Triplit clients over WebSockets and HTTP.
 
 You have several options for running the server:
 
@@ -47,11 +47,29 @@ process.on('SIGINT', function () {
 });
 ```
 
+You may specify the storage adapter you want to use by setting the `storage` option. Triplit provides some default configurations of our storage adapters, which you can use by setting the `storage` option to the appropriate string value for the adapter. Typically this will use your `LOCAL_DATABASE_URL` environment variable so you'll want to make sure that's set. See the [source code](https://github.com/aspen-cloud/triplit/tree/main/packages/server) for the server for available options.
+
+You can also pass in an instance of an adapter or a function that returns an instance of an adapter.
+
+```typescript
+function createAdapter() {
+  return new MyCustomAdapter();
+}
+
+const startServer = createServer({
+  storage: createAdapter,
+});
+```
+
 You can now deploy the server to a cloud provider that supports Git deploys, like [Vercel](https://vercel.com/docs/git), [Netlify](https://docs.netlify.com/configure-builds/get-started/), or [Render](https://docs.render.com/deploys).
 
 ## Secrets
 
 There are a few secrets that you need to provide to the server to enable certain features.
+
+### `PROJECT_ID`
+
+The server uses a `PROJECT_ID` to identify your project. You can set the `PROJECT_ID` environment variable to a unique identifier for your project. If you would like to connect to the Triplit Dashboard, this value should be the unique identifier for your project. You can find this value in the dashboard in your project's settings.
 
 ### `JWT_SECRET`
 
@@ -85,7 +103,7 @@ const serviceKey = jwt.sign(
 );
 ```
 
-For more complicate authentication schemes, refer to our [authentication guide](/auth).
+For more complicated authentication schemes, refer to our [authentication guide](/auth).
 
 ### `EXTERNAL_JWT_SECRET` (optional)
 
