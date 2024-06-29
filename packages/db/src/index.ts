@@ -34,21 +34,13 @@ export {
   queryResultToJson,
   or,
   and,
+  exists,
   constructEntity,
   // TODO
   triplesToEntities as constructEntities,
   compareCursors,
 } from './query.js';
 export { QUERY_INPUT_TRANSFORMERS } from './query/builder.js';
-// TS issue occurs if we dont export FilterGroup (i think due to an infered return type somewhere)
-export type {
-  Query,
-  FilterGroup,
-  CollectionQuery,
-  ValueCursor,
-  RelationSubquery,
-  QuerySelectionValue,
-} from './query.js';
 export {
   stripCollectionFromId,
   appendCollectionToId,
@@ -106,3 +98,5 @@ export { timestampedObjectToPlainObject } from './utils.js';
 export type { TimestampedObject, UnTimestampedObject } from './utils.js';
 export type { IsAny } from './utility-types.js';
 export * from './errors.js';
+// See ./data-types/index.ts for why this is necessary
+export type * from './data-types';

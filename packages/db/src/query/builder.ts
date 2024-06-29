@@ -1,15 +1,4 @@
 import { Models, RelationAttributes } from '../schema/types';
-import {
-  CollectionQuery,
-  FilterStatement,
-  Query,
-  QueryOrder,
-  QuerySelectionValue,
-  QueryValue,
-  QueryWhere,
-  ValueCursor,
-  RelationSubquery,
-} from '../query.js';
 import { CollectionNameFromModels, ModelFromModels } from '../db.js';
 import {
   AfterClauseWithNoOrderError,
@@ -26,6 +15,16 @@ import {
   AfterInput,
   IncludeSubquery,
   InclusionFromArgs,
+  CollectionQuery,
+  FilterStatement,
+  Query,
+  QueryOrder,
+  QuerySelectionValue,
+  QueryValue,
+  QueryWhere,
+  ValueCursor,
+  RelationSubquery,
+  OrderStatement,
 } from './types';
 
 export class QueryBuilder<
@@ -177,7 +176,9 @@ export const QUERY_INPUT_TRANSFORMERS = <
   ): QueryWhere<M, CN> => {
     let newWhere: QueryWhere<M, CN> = [];
     if (args[0] == undefined) return q.where ?? [];
-    if (typeof args[0] === 'string') {
+    if (typeof args[0] === 'boolean') {
+      newWhere = [args[0]];
+    } else if (typeof args[0] === 'string') {
       /**
        * E.g. where("id", "=", "123")
        */
@@ -204,9 +205,9 @@ export const QUERY_INPUT_TRANSFORMERS = <
   order: (
     q: Query<M, CN>,
     ...args: OrderInput<M, CN>
-  ): QueryOrder<M, CN>[] | undefined => {
+  ): QueryOrder<M, CN> | undefined => {
     if (!args[0]) return undefined;
-    let newOrder: QueryOrder<M, CN>[] = [];
+    let newOrder: QueryOrder<M, CN> = [];
     /**
      * E.g. order("id", "ASC")
      */
@@ -214,7 +215,7 @@ export const QUERY_INPUT_TRANSFORMERS = <
       args.length === 2 &&
       (args as any[]).every((arg) => typeof arg === 'string')
     ) {
-      newOrder = [[...args] as QueryOrder<M, CN>];
+      newOrder = [[...args] as OrderStatement<M, CN>];
     } else if (
       /**
        * E.g. order([["id", "ASC"], ["name", "DESC"]])
@@ -223,12 +224,12 @@ export const QUERY_INPUT_TRANSFORMERS = <
       args[0] instanceof Array &&
       args[0].every((arg) => arg instanceof Array)
     ) {
-      newOrder = args[0] as NonNullable<Query<M, CN>['order']>;
+      newOrder = args[0] as NonNullable<QueryOrder<M, CN>>;
     } else if (args.every((arg) => arg instanceof Array)) {
       /**
        * E.g. order(["id", "ASC"], ["name", "DESC"])
        */
-      newOrder = args as NonNullable<Query<M, CN>['order']>;
+      newOrder = args as NonNullable<QueryOrder<M, CN>>;
     } else {
       throw new QueryClauseFormattingError('order', args);
     }

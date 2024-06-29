@@ -11,6 +11,7 @@ import {
   InvalidWhereClauseError,
   RelationDoesNotExistError,
   IncludedNonRelationError,
+  InvalidFilterError,
 } from './errors.js';
 import {
   QueryWhere,
@@ -20,6 +21,15 @@ import {
   QueryValue,
   WhereFilter,
   RelationSubquery,
+  RelationshipExistsFilter,
+} from './query/types';
+import {
+  isSubQueryFilter,
+  isBooleanFilter,
+  isFilterGroup,
+  isFilterStatement,
+  isExistsFilter,
+  exists,
 } from './query.js';
 import {
   getSchemaFromPath,
@@ -106,19 +116,18 @@ export function replaceVariablesInFilterStatements<
   variables: Record<string, any>
 ): QueryWhere<M, CN> {
   return statements.map((filter) => {
-    if ('exists' in filter) return filter;
-    if (!(filter instanceof Array)) {
+    if (isFilterGroup(filter))
       return {
         ...filter,
         filters: replaceVariablesInFilterStatements(filter.filters, variables),
       };
+    if (isFilterStatement(filter)) {
+      const replacedValue = replaceVariable(filter[2], variables);
+      return [filter[0], filter[1], replacedValue];
     }
-    const replacedValue = replaceVariable(filter[2], variables);
-    return [filter[0], filter[1], replacedValue] as FilterStatement<M, CN>;
+    return filter;
   });
 }
-
-async function loadVariableValue(executionContext: FetchExecutionContext) {}
 
 export function replaceVariable(
   target: any,
@@ -155,9 +164,14 @@ export function* filterStatementIterator<
   CN extends CollectionNameFromModels<M>
 >(
   statements: QueryWhere<M, CN>
-): Generator<FilterStatement<M, CN> | SubQueryFilter> {
+): Generator<
+  | FilterStatement<M, CN>
+  | SubQueryFilter
+  | RelationshipExistsFilter<M, CN>
+  | boolean
+> {
   for (const statement of statements) {
-    if (!(statement instanceof Array) && 'filters' in statement) {
+    if (isFilterGroup(statement)) {
       yield* filterStatementIterator(statement.filters);
     } else {
       yield statement;
@@ -170,7 +184,13 @@ export function someFilterStatements<
   CN extends CollectionNameFromModels<M>
 >(
   statements: QueryWhere<M, CN>,
-  someFunction: (statement: SubQueryFilter | FilterStatement<M, CN>) => boolean
+  someFunction: (
+    statement:
+      | SubQueryFilter
+      | FilterStatement<M, CN>
+      | RelationshipExistsFilter<M, CN>
+      | boolean
+  ) => boolean
 ): boolean {
   for (const statement of filterStatementIterator(statements)) {
     if (someFunction(statement)) return true;
@@ -184,32 +204,23 @@ export function mapFilterStatements<
 >(
   statements: QueryWhere<M, CN>,
   mapFunction: (
-    statement: SubQueryFilter | FilterStatement<M, CN>
-  ) => SubQueryFilter | FilterStatement<M, CN>
+    statement:
+      | FilterStatement<M, CN>
+      | SubQueryFilter
+      | RelationshipExistsFilter<M, CN>
+      | boolean
+  ) =>
+    | FilterStatement<M, CN>
+    | SubQueryFilter
+    | RelationshipExistsFilter<M, CN>
+    | boolean
 ): QueryWhere<M, CN> {
   return statements.map((statement) => {
-    if ('exists' in statement) return statement;
-    if (!(statement instanceof Array) && 'filters' in statement) {
+    if (isFilterGroup(statement)) {
       statement.filters = mapFilterStatements(statement.filters, mapFunction);
+      return statement;
     }
-    return mapFunction(statement as FilterStatement<M, CN>);
-  });
-}
-
-export function everyFilterStatement<
-  M extends Models<any, any> | undefined,
-  CN extends CollectionNameFromModels<M>
->(
-  statements: QueryWhere<M, CN>,
-  everyFunction: (statement: FilterStatement<M, CN>) => boolean
-): boolean {
-  return statements.every((filter) => {
-    if (!(filter instanceof Array) && 'filters' in filter) {
-      return everyFilterStatement(filter.filters, everyFunction);
-    }
-    // TODO should this traverse sub-queries?
-    if ('exists' in filter) return true;
-    return everyFunction(filter);
+    return mapFunction(statement);
   });
 }
 
@@ -455,6 +466,48 @@ export function prepareQuery<
     (statement) => {
       // Validate filter
       whereValidator(statement);
+      // Turn exists filter into a subquery
+      if (isExistsFilter(statement)) {
+        const { relationship, query } = statement;
+        if (!schema)
+          throw new InvalidFilterError(
+            'A schema is required to execute an exists filter'
+          );
+
+        const relationshipPath = relationship.split('.');
+        const [first, ...rest] = relationshipPath;
+        const isPropertyNested = rest.length > 0;
+        const attributeType = getAttributeFromSchema(
+          [first],
+          schema,
+          fetchQuery.collectionName
+        );
+        if (!attributeType)
+          throw new InvalidFilterError(
+            `Could not find property '${relationship}' in the schema`
+          );
+
+        if (attributeType.type !== 'query')
+          throw new InvalidFilterError(
+            'Cannot execute an exists filter on a non-relation property'
+          );
+
+        const subquery = { ...attributeType.query };
+
+        // If property is nested, create a new exists filter for the subquery
+        const filterToAdd = isPropertyNested
+          ? [exists(rest.join('.') as string as any, query)]
+          : query?.where;
+
+        subquery.where = [
+          ...(attributeType.query.where ?? []),
+          ...(filterToAdd ?? []),
+        ];
+
+        return {
+          exists: prepareQuery(subquery, schema, options),
+        };
+      }
       if (!Array.isArray(statement)) return statement;
 
       // Expand subquery statements
@@ -559,14 +612,17 @@ export function prepareQuery<
 function whereFilterValidator<M extends Models<any, any> | undefined>(
   schema: M,
   collectionName: string
-): (fitler: WhereFilter<M, any>) => boolean {
+): (filter: WhereFilter<M, any>) => boolean {
   return (statement) => {
     // TODO: add helper function to determine when we should(n't) schema check (ie schemaless and _metadata)
     if (!schema) return true;
     if (collectionName === '_metadata') return true;
-    if ('exists' in statement) return true;
+    if (isSubQueryFilter(statement)) return true;
+    if (isExistsFilter(statement)) return true;
+
     // I believe these are handled as we expand statements in the mapFilterStatements function
-    if ('mod' in statement) return true;
+    if (isFilterGroup(statement)) return true;
+    if (isBooleanFilter(statement)) return true;
 
     const [prop, op, val] = statement;
     const { valid, path, reason } = validateIdentifier(

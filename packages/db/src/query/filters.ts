@@ -6,20 +6,26 @@ import {
 } from '../collection-query.js';
 import { Operator } from '../data-types/base.js';
 import DB from '../db.js';
-import { InvalidFilterError } from '../errors.js';
+import { InvalidFilterError, QueryNotPreparedError } from '../errors.js';
 import {
-  CollectionQuery,
   EntityPointer,
-  FilterStatement,
-  SubQueryFilter,
-  WhereFilter,
+  isBooleanFilter,
+  isExistsFilter,
+  isFilterGroup,
+  isSubQueryFilter,
 } from '../query.js';
 import { getAttributeFromSchema } from '../schema/schema.js';
-import { Models } from '../schema/types/models.js';
+import { Models } from '../schema/types';
 import { Timestamp } from '../timestamp.js';
 import { TripleStoreApi } from '../triple-store.js';
 import { timestampedObjectToPlainObject } from '../utils.js';
 import { everyAsync, someAsync } from '../utils/async.js';
+import {
+  FilterStatement,
+  SubQueryFilter,
+  WhereFilter,
+  CollectionQuery,
+} from './types';
 
 /**
  * During query execution, determine if an entity satisfies a filter
@@ -36,7 +42,8 @@ export async function satisfiesFilter<
   pipelineItem: QueryPipelineData,
   filter: WhereFilter<M, Q['collectionName']>
 ): Promise<boolean> {
-  if ('mod' in filter) {
+  if (isBooleanFilter(filter)) return filter;
+  if (isFilterGroup(filter)) {
     const { mod, filters } = filter;
     if (mod === 'and') {
       return await everyAsync(filters, (f) =>
@@ -65,7 +72,8 @@ export async function satisfiesFilter<
       );
     }
     return false;
-  } else if ('exists' in filter) {
+  }
+  if (isSubQueryFilter(filter)) {
     return await satisfiesRelationalFilter(
       db,
       tx,
@@ -76,6 +84,13 @@ export async function satisfiesFilter<
       filter
     );
   }
+
+  // TODO: we need to refactor our types have a clearer distinction between query inputs and prepared queries
+  // Ex. CollectionQuery<M, CN> vs Prepared<CollectionQuery<M, CN>>
+  if (isExistsFilter(filter)) {
+    throw new QueryNotPreparedError('Untranslated exists filter');
+  }
+
   return satisfiesFilterStatement(query, options, pipelineItem, filter);
 }
 
@@ -268,10 +283,10 @@ function ilike(text: string, pattern: string): boolean {
 function determineFilterType(
   filter: WhereFilter<any, any>
 ): 'basic' | 'relational' {
-  if ('exists' in filter) {
+  if (isSubQueryFilter(filter)) {
     return 'relational';
   }
-  if ('mod' in filter) {
+  if (isFilterGroup(filter)) {
     const { filters } = filter;
     const groupingTypes = filters.map((f) => determineFilterType(f));
     if (groupingTypes.includes('relational')) {

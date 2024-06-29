@@ -11,11 +11,8 @@ import {
   SystemVariables,
 } from './db.js';
 import { isValueVariable, mapFilterStatements } from './db-helpers.js';
-import {
-  CollectionQuery,
-  FilterStatement,
-  isFilterStatement,
-} from './query.js';
+import { isFilterStatement } from './query.js';
+import { CollectionQuery, FilterStatement } from './query/types';
 import { getSchemaFromPath } from './schema/schema.js';
 import { Models } from './schema/types';
 import * as TB from '@sinclair/typebox/value';
@@ -43,10 +40,7 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
   >(query: Q, model?: ModelFromModels<M, CN> | undefined) {
     // if (!model) return false;
     if (query.limit !== undefined) return false;
-    if (
-      query.where &&
-      query.where.some((f) => !(f instanceof Array) && !('exists' in f))
-    )
+    if (query.where && query.where.some((f) => !isFilterStatement(f)))
       return false;
 
     if (query.include && Object.keys(query.include).length > 0) return false;
@@ -55,9 +49,7 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
     if (query.select && query.select.some((s) => typeof s === 'object'))
       return false;
 
-    const statements = mapFilterStatements(query.where ?? [], (f) => f).filter(
-      isFilterStatement
-    ) as FilterStatement<M, CN>[];
+    const statements = (query.where ?? []).filter(isFilterStatement);
     const variableStatements: FilterStatement<M, CN>[] = statements.filter(
       ([, , v]) => typeof v === 'string' && v.startsWith('$')
     );

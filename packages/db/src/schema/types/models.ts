@@ -7,11 +7,6 @@ import {
   CollectionRules,
   ModelFromModels,
 } from '../../db.js';
-import {
-  CollectionQuery,
-  QuerySelectionValue,
-  RelationSubquery,
-} from '../../query.js';
 import { Intersection } from '../../utility-types.js';
 import { Schema } from '../builder.js';
 import { ExtractBasePaths, ModelPaths, ShiftPath } from './paths.js';
@@ -21,7 +16,12 @@ import {
   IsPropertyOptional,
   IsPropertyRequired,
 } from './properties.js';
-import { QueryResult } from '../../query/types';
+import {
+  CollectionQuery,
+  QueryResult,
+  QuerySelectionValue,
+  RelationSubquery,
+} from '../../query/types';
 
 export type SchemaConfig = { id: ReturnType<typeof Schema.Id> } & Record<
   string,
@@ -153,7 +153,7 @@ export type PathFilteredTypeFromModel<
 /**
  * A JS type from a model filtered by a QuerySelection type
  */
-export type QuerySelectionFitleredTypeFromModel<
+export type QuerySelectionFilteredTypeFromModel<
   M extends Models<any, any>,
   CN extends CollectionNameFromModels<M>,
   Selection extends QuerySelectionValue<M, CN>,
@@ -184,9 +184,13 @@ type ExtractRelationSubqueryType<
   >,
   Subquery['cardinality']
 >;
+
 /**
  * A type matching the properties of a model that are relations
  */
+// TODO: use <M, CN> pattern
+// TODO: move to paths.ts?
+// TODO: possibly make recursive / add depth
 export type RelationAttributes<M extends Model<any> | undefined> =
   M extends Model<any>
     ? {

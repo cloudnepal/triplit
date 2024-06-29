@@ -1,20 +1,21 @@
 import { CollectionNameFromModels, ModelFromModels } from '../../db.js';
 import {
-  CollectionQuery,
-  FilterStatement,
-  QueryOrder,
-  QueryWhere,
-  RelationSubquery,
-  ValueCursor,
-  WhereFilter,
-} from '../../query.js';
-import {
   Models,
   Path,
   RelationAttributes,
   SchemaPaths,
 } from '../../schema/types';
-import { CollectionQueryDefault } from './collection-query.js';
+import {
+  CollectionQuery,
+  CollectionQueryDefault,
+  FilterStatement,
+  OrderStatement,
+  QueryOrder,
+  QueryWhere,
+  RelationSubquery,
+  ValueCursor,
+  WhereFilter,
+} from './collection-query.js';
 import { FetchResultEntity } from './results.js';
 
 /**
@@ -50,7 +51,7 @@ export type FilterInput<
 export type OrderInput<
   M extends Models<any, any> | undefined,
   CN extends CollectionNameFromModels<M>
-> = QueryOrder<M, CN> | QueryOrder<M, CN>[] | [QueryOrder<M, CN>[]];
+> = OrderStatement<M, CN> | [OrderStatement<M, CN>] | [QueryOrder<M, CN>];
 
 /**
  * Input for builder after() clauses
