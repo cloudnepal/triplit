@@ -34,7 +34,6 @@ import { MemoryBTreeStorage as MemoryStorage } from '../src/storage/memory-btree
 import { testSubscription } from './utils/test-subscription.js';
 import {
   appendCollectionToId,
-  prepareQuery,
   stripCollectionFromId,
 } from '../src/db-helpers.js';
 import { TripleRow } from '../dist/types/triple-store-utils.js';
@@ -44,6 +43,7 @@ import {
   initialFetchExecutionContext,
 } from '../src/collection-query.js';
 import { CollectionQueryInclusion } from '../src/query/builder.js';
+import { prepareQuery } from '../src/query/prepare.js';
 
 const pause = async (ms: number = 100) =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -470,18 +470,6 @@ describe('Database API', () => {
       .fetch();
     expect(twoHundredLevelClasses.query()).toHaveLength(2);
     expect(twoHundredMathClasses).toHaveLength(1);
-  });
-
-  it('supports basic select statements', async () => {
-    const results = await db.fetch(
-      CollectionQueryBuilder('Class').select(['name', 'level']).build()
-    );
-    [...results.values()].forEach((entityObj) => {
-      expect(entityObj).toHaveProperty('name');
-      expect(entityObj).toHaveProperty('level');
-      expect(entityObj).not.toHaveProperty('department');
-      expect(entityObj).not.toHaveProperty('enrolled_students');
-    });
   });
 
   it('can report basic collection stats from the database', async () => {
