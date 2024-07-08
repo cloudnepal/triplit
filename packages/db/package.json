@@ -3,7 +3,7 @@
   "repository": "github:aspen-cloud/triplit",
   "homepage": "https://triplit.dev",
   "license": "AGPL-3.0-only",
-  "version": "0.3.49",
+  "version": "0.3.51",
   "source": "./src/index.ts",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -70,7 +70,7 @@
   },
   "dependencies": {
     "@sinclair/typebox": "^0.32.15",
-    "@triplit/tuple-database": "2.2.23",
+    "@triplit/tuple-database": "2.2.25",
     "idb": "^7.1.1",
     "nanoid": "^3.0.0",
     "pino": "^8.11.0",
