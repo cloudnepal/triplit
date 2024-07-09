@@ -30,19 +30,32 @@ import {
 } from '../client/types';
 import { clientQueryBuilder } from '../client/query-builder.js';
 
+export function getTriplitSharedWorkerPort(
+  workerUrl?: string
+): SharedWorker['port'] {
+  const worker = new SharedWorker(
+    workerUrl ?? new URL('worker-client-operator.js', import.meta.url),
+    { type: 'module', name: 'triplit-client' }
+  );
+  return worker.port;
+}
+
 export class WorkerClient<M extends ClientSchema | undefined = undefined> {
   initialized: Promise<void>;
   clientWorker: ComLink.Remote<Client<M>>;
   db: { updateGlobalVariables: (variables: Record<string, any>) => void } =
     {} as any;
   private _connectionStatus: ConnectionStatus;
-  constructor(options?: ClientOptions<M> & { workerUrl?: string }) {
-    const worker = new SharedWorker(
-      options?.workerUrl ??
-        new URL('worker-client-operator.js', import.meta.url),
-      { type: 'module', name: 'triplit-client' }
-    );
-    this.clientWorker = ComLink.wrap<Client<M>>(worker.port);
+  constructor(
+    options?: ClientOptions<M> & {
+      workerUrl?: string;
+    },
+    sharedWorkerPort?: MessagePort
+  ) {
+    if (!sharedWorkerPort) {
+      sharedWorkerPort = getTriplitSharedWorkerPort(options?.workerUrl);
+    }
+    this.clientWorker = ComLink.wrap<Client<M>>(sharedWorkerPort);
     const { schema } = options || {};
     // @ts-ignore
     this.initialized = this.clientWorker.init({
