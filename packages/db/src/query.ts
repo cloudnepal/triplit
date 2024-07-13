@@ -71,6 +71,7 @@ type TimestampedData =
   | [Record<string, TimestampedData>, Timestamp];
 type EntityData = Record<string, TimestampedData>;
 
+// TODO: although at one point this was a servicable abstraction, we can probably do better
 export class Entity {
   data: EntityData = {};
   triples: Record<string, TripleRow> = {};
@@ -96,6 +97,9 @@ export class Entity {
 
     // Set tombstones as undefined, so we can continue to reduce and check timestamp
     let value: any = isExpired ? undefined : rawValue;
+
+    // Copy array values to prevent mutation
+    if (Array.isArray(value)) value = [...value];
 
     // Handle _collection attribute
     if (attribute[0] === '_collection') {
