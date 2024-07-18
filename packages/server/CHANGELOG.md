@@ -1,5 +1,31 @@
 # @triplit/server
 
+## 0.3.63
+
+### Patch Changes
+
+- f2beb55: Safely import version for sentry plugin
+
+## 0.3.62
+
+### Patch Changes
+
+- 5621dcc: Only read package.json when needed
+
+## 0.3.61
+
+### Patch Changes
+
+- 709fad1: hotfix: hardcode version in sentry
+
+## 0.3.60
+
+### Patch Changes
+
+- 3c7404e: use require to load package.json
+- Updated dependencies [b410f2c]
+  - @triplit/server-core@0.3.58
+
 ## 0.3.59
 
 ### Patch Changes
