@@ -1,5 +1,17 @@
 # create-triplit-app
 
+## 0.0.18
+
+### Patch Changes
+
+- 28e4744: fixup vue template instructions
+
+## 0.0.17
+
+### Patch Changes
+
+- e9fa966: add Vue template
+
 ## 0.0.16
 
 ### Patch Changes
