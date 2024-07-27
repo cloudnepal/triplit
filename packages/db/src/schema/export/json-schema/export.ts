@@ -1,9 +1,6 @@
-import { Models } from '../types';
-
+import { Models } from '../../types';
 import { JSONSchema7 } from 'json-schema';
-
-import { schemaToJSON } from '../../../../db/src/schema/schema';
-
+import { schemaToJSON } from '../json/export.js';
 import {
   transformDate,
   transformRecord,
@@ -11,11 +8,10 @@ import {
   transformOptions,
   deleteRelationFields,
   transformPropertiesOptionalToRequired,
-} from './transformFuncs';
-
+} from './transform-funcs.js';
 import Ajv from 'ajv';
 import addFormats from 'ajv-formats';
-import { transformObjectDeeply } from './transformObjectDeeply.js';
+import { transformObjectDeeply } from './transform-object-deeply.js';
 
 // =============
 
@@ -62,6 +58,8 @@ export function exportSchemaAsJSONSchema(
     version: 0,
   });
 
+  console.dir(triplitSchemaJsonData, { depth: null });
+
   for (const collectionKey in triplitSchemaJsonData?.collections) {
     //
     const collectionJsonSchema: JSONSchema7 =
@@ -87,10 +85,10 @@ export const transformFunctions = [
   // PRE: needs to run first as it might delete keys
   deleteRelationFields,
   // Mid:
-  transformOptions,
   transformDate,
   transformRecord,
   transformSet,
+  transformOptions,
   // POST: must run last since other functions might delete keys
   transformPropertiesOptionalToRequired,
 ];
@@ -104,10 +102,10 @@ function transformTriplitJsonDataInJsonSchema(
     triplitCollectionJsonData?.collections?.[collection].schema;
 
   const cloneToTransform = structuredClone(collectionToTransform);
-
   transformFunctions.map((transformFunc) => {
     transformObjectDeeply(cloneToTransform, transformFunc);
   });
+  console.dir(cloneToTransform, { depth: null });
   // evaluate to ensure it compiles
   // e.g. if triplit changes their format
   const schemaEvaluation = ajv.compile(cloneToTransform);
