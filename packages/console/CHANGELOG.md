@@ -1,5 +1,27 @@
 # @triplit/console
 
+## 0.3.86
+
+### Patch Changes
+
+- 3d3d9b1: fixup issue with dropping collection
+- Updated dependencies [40e2e50]
+  - @triplit/client@0.3.80
+  - @triplit/db@0.3.62
+  - @triplit/react@0.3.84
+
+## 0.3.85
+
+### Patch Changes
+
+- 89107bc: Await schema sync on new collection creation
+- Updated dependencies [c78aa65]
+- Updated dependencies [1c0bdf7]
+- Updated dependencies [6ccbbd5]
+  - @triplit/db@0.3.61
+  - @triplit/client@0.3.79
+  - @triplit/react@0.3.83
+
 ## 0.3.84
 
 ### Patch Changes

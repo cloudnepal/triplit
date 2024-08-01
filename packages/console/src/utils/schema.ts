@@ -156,12 +156,12 @@ export async function safeSchemaEdit(
   callback: (tx: DBTransaction<any>) => Promise<void>
 ) {
   const originalSchema = await client.db.getSchema();
-  return (
-    await client.transact(async (tx) => {
+  const transaction = await client.transact(
+    async (tx) => {
       try {
         await callback(tx);
         if (!originalSchema) return;
-        const updatedSchema = await tx.getSchema();
+        const updatedSchema = await tx.getSchemaFromStore();
         if (!updatedSchema) return;
         const diff = diffSchemas(originalSchema, updatedSchema);
 
@@ -177,8 +177,28 @@ export async function safeSchemaEdit(
         console.error(e);
         throw e;
       }
-    })
-  ).output;
+    },
+    {
+      manualSchemaRefresh: true,
+    }
+  );
+  // Wait for transaction to commit remotely so we can start subscription on new collection
+  // Otherwise we get errors that the collection doesn't exist
+  // TODO: NEED better API for handling this kind of situation
+  const { txId, output, isCancelled } = transaction;
+  if (txId && !isCancelled) {
+    const promise = new Promise<void>((resolve, reject) => {
+      client.syncEngine.onTxCommit(txId, () => {
+        resolve();
+      });
+      client.syncEngine.onTxFailure(txId, (e) => {
+        reject(e);
+      });
+    });
+    await promise;
+  }
+
+  return output;
 }
 
 export function parseIssue(
