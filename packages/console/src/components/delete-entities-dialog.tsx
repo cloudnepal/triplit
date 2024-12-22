@@ -13,31 +13,22 @@ import {
   AlertDialogTrigger,
 } from '@triplit/ui';
 import { useState } from 'react';
-import { consoleClient } from 'triplit/client.js';
 import { Trash } from '@phosphor-icons/react';
+import { RoleFilters } from './role-filters.js';
+import { type CollectionPermissions } from '@triplit/db';
 
 type DeleteEntitiesDialogProps = {
   entityIds: string[];
   collectionName: string;
+  permissions?: CollectionPermissions<any, any>;
   client: TriplitClient<any>;
+  onDialogConfirm: () => void;
 };
-
-async function deleteEntities(
-  client: TriplitClient<any>,
-  collectionName: string,
-  entityIds: string[]
-) {
-  await client.transact(async (tx) => {
-    await Promise.all(entityIds.map((id) => tx.delete(collectionName, id)));
-  });
-  await consoleClient.transact(async (tx) => {
-    await Promise.all(entityIds.map((id) => tx.delete('selections', id)));
-  });
-}
 
 export function DeleteEntitiesDialog(props: DeleteEntitiesDialogProps) {
   const [open, setOpen] = useState(false);
-  const { collectionName, client, entityIds } = props;
+  const { collectionName, client, entityIds, permissions, onDialogConfirm } =
+    props;
   return (
     <AlertDialog open={open} onOpenChange={setOpen}>
       <AlertDialogTrigger asChild>
@@ -61,14 +52,17 @@ export function DeleteEntitiesDialog(props: DeleteEntitiesDialogProps) {
             This action cannot be undone. This will permanently delete the
             entities from this collection.
           </AlertDialogDescription>
+          {permissions && (
+            <RoleFilters
+              client={client}
+              permissions={permissions}
+              rule={'delete'}
+            />
+          )}
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={async () => {
-              await deleteEntities(client, collectionName, entityIds);
-            }}
-          >
+          <AlertDialogAction onClick={onDialogConfirm}>
             Delete
           </AlertDialogAction>
         </AlertDialogFooter>

@@ -1,4 +1,4 @@
-import { Models } from '../../types';
+import { Models } from '../../types/index.js';
 import { JSONSchema7 } from 'json-schema';
 import { schemaToJSON } from '../json/export.js';
 import {
@@ -9,7 +9,7 @@ import {
   deleteRelationFields,
   transformPropertiesOptionalToRequired,
 } from './transform-funcs.js';
-import Ajv from 'ajv';
+import { Ajv } from 'ajv';
 import addFormats from 'ajv-formats';
 import { transformObjectDeeply } from './transform-object-deeply.js';
 
@@ -20,6 +20,7 @@ const ajv = new Ajv({
   strict: true,
 });
 
+// @ts-expect-error (weird typing here)
 addFormats(ajv);
 
 /**
@@ -28,7 +29,7 @@ addFormats(ajv);
  * (JSON schema can be used by most popular data validation libs)
  **/
 export function exportCollectionAsJSONSchema(
-  schema: Models<any, any>,
+  schema: Models,
   collectionName: string
 ): JSONSchema7 {
   const triplitCollectionJsonData = schemaToJSON({
@@ -47,10 +48,11 @@ export function exportCollectionAsJSONSchema(
  * Use `exportCollectionAsJSONSchema` for single collections
  **/
 export function exportSchemaAsJSONSchema(
-  schema: Models<any, any>
+  schema: Models
 ): JSONSchema7 | undefined {
   //
   if (!schema) return undefined;
+
   const collectionsListJsonSchema: Record<string, JSONSchema7> = {};
 
   const triplitSchemaJsonData = schemaToJSON({
@@ -58,11 +60,16 @@ export function exportSchemaAsJSONSchema(
     version: 0,
   });
 
-  for (const collectionKey in triplitSchemaJsonData?.collections) {
+  // copy and work on duplicate to keep original object unchanged
+  const duplicateOfTriplitSchemaJsonData = structuredClone(
+    triplitSchemaJsonData
+  );
+
+  for (const collectionKey in duplicateOfTriplitSchemaJsonData?.collections) {
     //
     const collectionJsonSchema: JSONSchema7 =
       transformTriplitJsonDataInJsonSchema(
-        triplitSchemaJsonData,
+        duplicateOfTriplitSchemaJsonData,
         collectionKey
       );
 

@@ -1,14 +1,17 @@
-import DB, {
+import {
   CollectionQuery,
   TripleRow,
   TriplitError,
   constructEntities,
   hashSchemaJSON,
   schemaToJSON,
-  stripCollectionFromId,
   convertEntityToJS,
   Timestamp,
   TripleStoreApi,
+  FetchResult,
+  Models,
+  Unalias,
+  ToQuery,
 } from '@triplit/db';
 import { SyncOptions, TriplitClient } from './client/triplit-client.js';
 import { Subject } from 'rxjs';
@@ -21,19 +24,33 @@ import { WebSocketTransport } from './transport/websocket-transport.js';
 import {
   ClientSyncMessage,
   CloseReason,
+  ServerCloseReasonType,
+  ServerErrorMessage,
   ServerSyncMessage,
-} from '@triplit/types/sync';
+} from './@triplit/types/sync.js';
 import {
   MissingConnectionInformationError,
   RemoteFetchFailedError,
   RemoteSyncFailedError,
 } from './errors.js';
-import { Value } from '@sinclair/typebox/value';
-import { ClientFetchResult, ClientQuery } from './client/types';
-import { Logger } from '@triplit/types/logger';
+import {
+  ClientQuery,
+  ErrorCallback,
+  SchemaClientQueries,
+} from './client/types';
+import { Logger } from './@triplit/types/logger.js';
+import { genToArr } from '@triplit/db';
+import { hashQuery } from '@triplit/db';
 
 type OnMessageReceivedCallback = (message: ServerSyncMessage) => void;
 type OnMessageSentCallback = (message: ClientSyncMessage) => void;
+
+type SessionErrors = Extract<
+  ServerCloseReasonType,
+  'ROLES_MISMATCH' | 'TOKEN_EXPIRED' | 'SCHEMA_MISMATCH' | 'UNAUTHORIZED'
+>;
+
+export type OnSessionErrorCallback = (type: SessionErrors) => void;
 
 const QUERY_STATE_KEY = 'query-state';
 
@@ -43,30 +60,39 @@ const QUERY_STATE_KEY = 'query-state';
 export class SyncEngine {
   private transport: SyncTransport;
 
-  private queries: Map<
-    string,
-    { params: CollectionQuery<any, any>; fulfilled: boolean }
-  > = new Map();
-
-  private reconnectTimeoutDelay = 250;
-  private reconnectTimeout: any;
-
   private client: TriplitClient<any>;
   private syncOptions: SyncOptions;
 
-  private connectionChangeHandlers: Set<(status: ConnectionStatus) => void> =
-    new Set();
-
-  private queryFulfillmentCallbacks: Map<string, (response: any) => void>;
   private txCommits$ = new Subject<string>();
   private txFailures$ = new Subject<{ txId: string; error: unknown }>();
 
+  private connectionChangeHandlers: Set<(status: ConnectionStatus) => void> =
+    new Set();
   private messageReceivedSubscribers: Set<OnMessageReceivedCallback> =
     new Set();
   private messageSentSubscribers: Set<OnMessageSentCallback> = new Set();
+  private sessionErrorSubscribers: Set<OnSessionErrorCallback> = new Set();
 
-  private awaitingAck: Set<string> = new Set();
   logger: Logger;
+
+  // Connection state - these are used to track the state of the connection and should reset on dis/reconnect
+  private awaitingAck: Set<string> = new Set();
+  private reconnectTimeoutDelay = 250;
+  private reconnectTimeout: any;
+
+  // Session state - these are used to track the state of the session and should persist across reconnections, but reset on reset()
+  private queries: Map<
+    string,
+    {
+      params: CollectionQuery<any, any>;
+      fulfilled: boolean;
+      responseCallbacks: Set<(response: any) => void>;
+      errorCallbacks: Set<ErrorCallback>;
+      subCount: number;
+      hasSent: boolean;
+      abortController: AbortController;
+    }
+  > = new Map();
 
   /**
    *
@@ -98,7 +124,6 @@ export class SyncEngine {
         }
       }
     });
-    this.queryFulfillmentCallbacks = new Map();
 
     // Signal the server when there are triples to send
     const throttledSignal = throttle(() => this.signalOutboxTriples(), 100);
@@ -127,6 +152,11 @@ export class SyncEngine {
       : undefined;
   }
 
+  updateTokenForSession(token: string) {
+    this.syncOptions.token = token;
+    this.transport.sendMessage({ type: 'UPDATE_TOKEN', payload: { token } });
+  }
+
   onSyncMessageReceived(callback: OnMessageReceivedCallback) {
     this.messageReceivedSubscribers.add(callback);
     return () => {
@@ -138,6 +168,13 @@ export class SyncEngine {
     this.messageSentSubscribers.add(callback);
     return () => {
       this.messageSentSubscribers.delete(callback);
+    };
+  }
+
+  onSessionError(callback: OnSessionErrorCallback) {
+    this.sessionErrorSubscribers.add(callback);
+    return () => {
+      this.sessionErrorSubscribers.delete(callback);
     };
   }
 
@@ -168,7 +205,7 @@ export class SyncEngine {
 
   async isFirstTimeFetchingQuery(query: CollectionQuery<any, any>) {
     await this.db.ready;
-    const hash = this.getQueryHash(query);
+    const hash = hashQuery(query);
     const state = await this.getQueryState(hash);
     return state === undefined;
   }
@@ -178,53 +215,94 @@ export class SyncEngine {
       [QUERY_STATE_KEY, [queryId], JSON.stringify(stateVector)],
     ]);
   }
-  private getQueryHash(params: CollectionQuery<any, any>) {
-    // @ts-expect-error
-    const { id, ...queryParams } = params;
-    return Value.Hash(queryParams).toString();
-  }
 
   /**
    * @hidden
    */
-  subscribe(params: CollectionQuery<any, any>, onQueryFulfilled?: () => void) {
-    const id = this.getQueryHash(params);
-    this.getQueryState(id).then((queryState: Timestamp[]) => {
-      this.sendMessage({
+  subscribe(
+    params: CollectionQuery<any, any>,
+    options: {
+      onQueryFulfilled?: () => void;
+      onQueryError?: ErrorCallback;
+    } = {}
+  ) {
+    const { onQueryFulfilled, onQueryError } = options;
+    const id = hashQuery(params);
+    if (!this.queries.has(id)) {
+      this.queries.set(id, {
+        params,
+        fulfilled: false,
+        responseCallbacks: new Set(),
+        errorCallbacks: new Set(),
+        subCount: 0,
+        hasSent: false,
+        abortController: new AbortController(),
+      });
+      this.connectQuery(id, params);
+    }
+    // Safely using query! here because we just set it
+    const query = this.queries.get(id)!;
+    query.subCount++;
+    if (onQueryFulfilled) {
+      query.fulfilled && onQueryFulfilled();
+      query.responseCallbacks.add(onQueryFulfilled);
+    }
+
+    if (onQueryError) {
+      query.errorCallbacks.add(onQueryError);
+    }
+
+    return () => {
+      const query = this.queries.get(id);
+      // If we cannot find the query, we may have already disconnected or reset our state
+      // just in case send a disconnect signal to the server
+      if (!query) {
+        this.disconnectQuery(id);
+        return;
+      }
+
+      // Clear data related to subscription
+      query.subCount--;
+      if (onQueryFulfilled) {
+        query.responseCallbacks.delete(onQueryFulfilled);
+      }
+      if (onQueryError) {
+        query.errorCallbacks.delete(onQueryError);
+      }
+
+      // If there are no more subscriptions, disconnect the query
+      if (query.subCount === 0) {
+        this.disconnectQuery(id);
+        return;
+      }
+    };
+  }
+
+  private connectQuery(queryId: string, params: CollectionQuery<any, any>) {
+    if (!this.queries.has(queryId)) return;
+
+    this.getQueryState(queryId).then((queryState: Timestamp[]) => {
+      const queryMetadata = this.queries.get(queryId);
+      if (
+        !queryMetadata ||
+        queryMetadata.hasSent ||
+        queryMetadata.abortController.signal.aborted
+      ) {
+        return;
+      }
+      const didSend = this.sendMessage({
         type: 'CONNECT_QUERY',
         payload: {
-          id: id,
+          id: queryId,
           params,
           state: queryState,
         },
       });
-      this.queries.set(id, { params, fulfilled: false });
-      this.onQueryFulfilled(id, (resp) => {
-        const { triples } = resp;
-        if (triples.length > 0) {
-          const stateVector = this.triplesToStateVector(triples);
-          const nextQueryState = new Map(
-            (queryState ?? []).map(([t, c]) => [c, t])
-          );
-          stateVector.forEach(([t, c]) => {
-            const current = nextQueryState.get(c);
-            if (!current || t > current) {
-              nextQueryState.set(c, t);
-            }
-          });
-          this.setQueryState(
-            id,
-            [...nextQueryState.entries()].map(([c, t]) => [t, c])
-          );
-        }
-        this.queries.set(id, { params, fulfilled: true });
-        if (onQueryFulfilled) onQueryFulfilled();
-      });
+      if (didSend) {
+        queryMetadata.hasSent = true;
+      }
+      return didSend;
     });
-
-    return () => {
-      this.disconnectQuery(id);
-    };
   }
 
   private triplesToStateVector(triples: TripleRow[]): Timestamp[] {
@@ -243,10 +321,6 @@ export class SyncEngine {
     ]);
   }
 
-  onQueryFulfilled(queryId: string, callback: (response: any) => void) {
-    this.queryFulfillmentCallbacks.set(queryId, callback);
-  }
-
   hasQueryBeenFulfilled(queryId: string) {
     return this.queries.get(queryId)?.fulfilled ?? false;
   }
@@ -255,7 +329,13 @@ export class SyncEngine {
    * @hidden
    */
   disconnectQuery(id: string) {
-    this.sendMessage({ type: 'DISCONNECT_QUERY', payload: { id } });
+    if (!this.queries.has(id)) return;
+    const queryMetadata = this.queries.get(id)!;
+    if (queryMetadata.hasSent) {
+      this.sendMessage({ type: 'DISCONNECT_QUERY', payload: { id } });
+    } else {
+      queryMetadata.abortController.abort();
+    }
     this.queries.delete(id);
   }
 
@@ -318,10 +398,15 @@ export class SyncEngine {
         const { payload } = message;
         const triples = payload.triples;
         const queryIds = payload.forQueries;
+
         for (const qId of queryIds) {
-          const callback = this.queryFulfillmentCallbacks.get(qId);
-          if (callback) {
-            callback(payload);
+          await this.updateQueryStateVector(qId, triples);
+          const query = this.queries.get(qId);
+          if (!query) continue;
+          query.fulfilled = true;
+          const callbackSet = query?.responseCallbacks;
+          if (callbackSet) {
+            for (const callback of callbackSet) callback(payload);
           }
           // this.queryFulfillmentCallbacks.delete(qId);
         }
@@ -355,10 +440,12 @@ export class SyncEngine {
             // move all commited outbox triples to cache
             for (const clientTxId of txIds) {
               const timestamp = JSON.parse(clientTxId);
-              const triplesToEvict = await outboxOperator.findByClientTimestamp(
-                await this.db.getClientId(),
-                'eq',
-                timestamp
+              const triplesToEvict = await genToArr(
+                outboxOperator.findByClientTimestamp(
+                  await this.db.getClientId(),
+                  'eq',
+                  timestamp
+                )
               );
               if (triplesToEvict.length > 0) {
                 await cacheOperator.insertTriples(triplesToEvict);
@@ -419,26 +506,17 @@ export class SyncEngine {
       if (hasOutboxTriples) this.signalOutboxTriples();
       // Reconnect any queries
       for (const [id, queryInfo] of this.queries) {
-        this.getQueryState(id).then((queryState) => {
-          this.sendMessage({
-            type: 'CONNECT_QUERY',
-            payload: {
-              id,
-              params: queryInfo.params,
-              state: queryState,
-            },
-          });
-        });
+        this.connectQuery(id, queryInfo.params);
       }
     });
 
     this.transport.onClose((evt) => {
       // Clear any sync state
-      this.awaitingAck = new Set();
+      this.resetQueryAcks();
 
       // If there is no reason, then default is to retry
       if (evt.reason) {
-        let type: string;
+        let type: ServerCloseReasonType;
         let retry: boolean;
         // We populate the reason field with some information about the close
         // Some WS implementations include a reason field that isn't a JSON string on connection failures, etc
@@ -450,16 +528,46 @@ export class SyncEngine {
           type = 'UNKNOWN';
           retry = true;
         }
-
+        if (type === 'UNAUTHORIZED') {
+          this.logger.error(
+            'The server has closed the connection because the client is unauthorized. Please provide a valid token.'
+          );
+        }
         if (type === 'SCHEMA_MISMATCH') {
           this.logger.error(
             'The server has closed the connection because the client schema does not match the server schema. Please update your client schema.'
           );
         }
 
+        if (type === 'TOKEN_EXPIRED') {
+          this.logger.error(
+            'The server has closed the connection because the token has expired. Fetch a new token from your authentication provider and call `TriplitClient.endSession()` and `TriplitClient.startSession(token)` to restart the session.'
+          );
+        }
+
+        if (type === 'ROLES_MISMATCH') {
+          this.logger.error(
+            'The server has closed the connection because the client attempted to update the session with a token that has different roles than the existing token. Call `TriplitClient.endSession()` and `TriplitClient.startSession(token)` to restart the session with the new token.'
+          );
+        }
+        if (
+          [
+            'ROLES_MISMATCH',
+            'TOKEN_EXPIRED',
+            'SCHEMA_MISMATCH',
+            'UNAUTHORIZED',
+          ].includes(type)
+        ) {
+          for (const handler of this.sessionErrorSubscribers) {
+            handler(type as SessionErrors);
+          }
+        }
+
         if (!retry) {
           // early return to prevent reconnect
-          this.logger.warn('Connection will not automatically retry.');
+          this.logger.warn(
+            'The connection has closed. Based on the signal, the connection will not automatically retry. If you would like to reconnect, please call `connect()`.'
+          );
           return;
         }
       }
@@ -497,20 +605,39 @@ export class SyncEngine {
     return this.transport.connectionStatus;
   }
 
+  private async updateQueryStateVector(queryId: string, triples: any) {
+    const queryState: Timestamp[] = await this.getQueryState(queryId);
+    if (triples.length > 0) {
+      const stateVector = this.triplesToStateVector(triples);
+      const nextQueryState = new Map(
+        (queryState ?? []).map(([t, c]) => [c, t])
+      );
+      stateVector.forEach(([t, c]) => {
+        const current = nextQueryState.get(c);
+        if (!current || t > current) {
+          nextQueryState.set(c, t);
+        }
+      });
+      this.setQueryState(
+        queryId,
+        [...nextQueryState.entries()].map(([c, t]) => [t, c])
+      );
+    }
+  }
+
   /**
    * @hidden
-   * Update the sync engine's configuration options
+   * Updates the sync engine's configuration options. If the connection is currently open, it will be closed and you will need to call `connect()` again.
    * @param options
    */
   updateConnection(options: Partial<SyncOptions>) {
-    const areAnyOptionsNew = (
-      Object.keys(options) as Array<keyof SyncOptions>
-    ).some((option) => this.syncOptions[option] !== options[option]);
-    if (!areAnyOptionsNew) return;
-
-    this.disconnect();
+    if (this.connectionStatus === 'OPEN') {
+      console.warn(
+        'You are updating the connection options while the connection is open. To avoid unexpected behavior the connection will be closed and you should call `connect()` again after the update. To hide this warning, call `disconnect()` before updating the connection options.'
+      );
+      this.disconnect();
+    }
     this.syncOptions = { ...this.syncOptions, ...options };
-    this.connect();
   }
 
   /**
@@ -520,7 +647,39 @@ export class SyncEngine {
     this.closeConnection({ type: 'MANUAL_DISCONNECT', retry: false });
   }
 
-  private async handleErrorMessage(message: any) {
+  /**
+   * Clears state vectors for remote queries and resets their server acks.
+   * On the next connection, queries will be re-sent to server as if there is no previous seen data.
+   * If the connection is currently open, it will be closed and you will need to call `connect()` again.
+   */
+  async resetQueryState() {
+    if (this.connectionStatus === 'OPEN') {
+      console.warn(
+        'You are resetting the sync engine while the connection is open. To avoid unexpected behavior the connection will be closed and you should call `connect()` again after resetting. To hide this warning, call `disconnect()` before resetting.'
+      );
+      this.disconnect();
+    }
+    this.resetQueryAcks();
+
+    // delete the state vectors
+    await this.db.tripleStore.transact(async (tx) => {
+      await tx.deleteMetadataTuples([[QUERY_STATE_KEY]]);
+    });
+  }
+
+  /**
+   * Marks all queries as unsent and removes received acks,
+   * priming them to be resent on the next connection
+   */
+  private resetQueryAcks() {
+    this.awaitingAck = new Set();
+    for (const id of this.queries.keys()) {
+      const queryMetadata = this.queries.get(id);
+      queryMetadata!.hasSent = false;
+    }
+  }
+
+  private async handleErrorMessage(message: ServerErrorMessage) {
     const { error, metadata } = message.payload;
     this.logger.error(error.name, metadata);
     switch (error.name) {
@@ -542,7 +701,17 @@ export class SyncEngine {
       // You will still send triples, but you wont receive updates
       case 'QuerySyncError':
         const queryKey = metadata?.queryKey;
-        if (queryKey) this.disconnectQuery(queryKey);
+        if (queryKey) {
+          const query = this.queries.get(queryKey);
+          if (query) {
+            const parsedError = TriplitError.fromJson(error);
+            for (const errorCallback of query.errorCallbacks) {
+              // TODO: include metadata (inner error)
+              await errorCallback(parsedError);
+            }
+          }
+          this.disconnectQuery(queryKey);
+        }
     }
   }
 
@@ -558,11 +727,16 @@ export class SyncEngine {
   }
 
   private sendMessage(message: ClientSyncMessage) {
-    this.transport.sendMessage(message);
-    this.logger.debug('sent', message);
-    for (const handler of this.messageSentSubscribers) {
-      handler(message);
+    const didSend = this.transport.sendMessage(message);
+
+    if (didSend) {
+      this.logger.debug('sent', message);
+      for (const handler of this.messageSentSubscribers) {
+        handler(message);
+      }
     }
+
+    return didSend;
   }
 
   /**
@@ -571,9 +745,11 @@ export class SyncEngine {
    */
   async retry(txId: string) {
     const timestamp: Timestamp = JSON.parse(txId);
-    const triplesToSend = await this.db.tripleStore
-      .setStorageScope(['outbox'])
-      .findByClientTimestamp(await this.db.getClientId(), 'eq', timestamp);
+    const triplesToSend = await genToArr(
+      this.db.tripleStore
+        .setStorageScope(['outbox'])
+        .findByClientTimestamp(await this.db.getClientId(), 'eq', timestamp)
+    );
     if (triplesToSend.length > 0) this.sendTriples(triplesToSend);
   }
 
@@ -591,10 +767,12 @@ export class SyncEngine {
         });
         for (const txId of txIdList) {
           const timestamp = JSON.parse(txId);
-          const triples = await scopedTx.findByClientTimestamp(
-            await this.db.getClientId(),
-            'eq',
-            timestamp
+          const triples = await genToArr(
+            scopedTx.findByClientTimestamp(
+              await this.db.getClientId(),
+              'eq',
+              timestamp
+            )
           );
           await scopedTx.deleteTriples(triples);
         }
@@ -653,18 +831,17 @@ export class SyncEngine {
   /**
    * @hidden
    */
-  async fetchQuery<CQ extends ClientQuery<any, any>>(query: CQ) {
+  async fetchQuery<M extends Models, CQ extends SchemaClientQueries<M>>(
+    query: CQ
+  ) {
     try {
       // Simpler to serialize triples and reconstruct entities on the client
       const triples = await this.getRemoteTriples(query);
       const entities = constructEntities(triples);
       const schema = (await this.db.getSchema())?.collections;
-      return new Map(
-        [...entities].map(([id, entity]) => [
-          stripCollectionFromId(id),
-          convertEntityToJS(entity.data as any, schema),
-        ])
-      ) as ClientFetchResult<CQ>;
+      return [...entities].map(([, entity]) =>
+        convertEntityToJS(entity.data, schema)
+      ) as Unalias<FetchResult<M, ToQuery<M, CQ>>>;
     } catch (e) {
       if (e instanceof TriplitError) throw e;
       if (e instanceof Error)
@@ -714,7 +891,9 @@ export class SyncEngine {
   }
 
   private async getTriplesToSend(store: TripleStoreApi) {
-    return (await store.findByEntity()).filter((t) => this.shouldSendTriple(t));
+    return (await genToArr(store.findByEntity())).filter((t) =>
+      this.shouldSendTriple(t)
+    );
   }
 
   private shouldSendTriple(t: TripleRow) {

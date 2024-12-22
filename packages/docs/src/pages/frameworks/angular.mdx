@@ -49,7 +49,7 @@ The `injectQuery` hook subscribes to the provided query inside your Angular comp
 
 The result of the hook is an object with the following `Signal` properties:
 
-- `results`: A Map containing the results of the query, with entity ids as keys and entities as values.
+- `results`: An array of entities that satisfy the query.
 - `fetching`: A boolean that will be `true` initially, and then turn `false` when either the local fetch returns cached results or if there were no cached results and the remote fetch has completed.
 - `fetchingLocal`: A boolean indicating whether the query is currently fetching from the local cache.
 - `fetchingRemote`: A boolean indicating whether the query is currently fetching from the server.
@@ -67,14 +67,15 @@ import { TodoComponent } from './todo/todo.component.js';
   imports: [TodoComponent],
   template: `
     <div>
-      @if(queryResults.fetching()){
-      <p>Loading...</p>
-      } @else {
-      <div>
-        @for (todo of todosArray(); track todo.id) {
-        <app-todo [todo]="todo" />
-        }
-      </div>
+      @if (queryResults.fetching()) {
+        <p>Loading...</p>
+      }
+      @if (queryResults.results()) {
+        <div>
+          @for (todo of queryResults.results(); track todo.id) {
+            <app-todo [todo]="todo" />
+          }
+        </div>
       }
     </div>
   `,
@@ -84,12 +85,6 @@ export class AppComponent {
     client: triplit,
     query: triplit.query('todos').order('created_at', 'DESC'),
   }));
-  todosArray = computed(() => {
-    const results = this.queryResults.results();
-    if (!results) return [];
-    results;
-    return Array.from(results.values());
-  });
 }
 ```
 
@@ -107,8 +102,13 @@ import { triplit } from '../../../triplit/client.js';
   standalone: true,
   template: `<div>
     <div class="{{ 'indicator ' + status().toLowerCase() }}"></div>
-    @if (status() === 'CLOSED') {Offline} @else if (status() === 'CONNECTING')
-    {Connecting} @else {Online}
+    @if (status() === 'CLOSED') {
+      Offline
+    } @else if (status() === 'CONNECTING') {
+      Connecting
+    } @else {
+      Online
+    }
   </div>`,
 })
 export class ConnectionStatusComponent {
@@ -124,7 +124,7 @@ The `createQuery` hook return an object with observable properties that contain 
 
 ```ts filename="app.component.ts"
 import { triplit } from '@/triplit/client.js';
-import { injectQuery } from '@triplit/angular';
+import { createQuery } from '@triplit/angular';
 import { Component } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { TodoComponent } from './todo/todo.component.js';
@@ -136,14 +136,14 @@ import { map } from 'rxjs';
   imports: [TodoComponent, CommonModule],
   template: `
     <div>
-      @if(queryResults.fetching$ | async) {
-      <p>Loading...</p>
+      @if (queryResults.fetching$ | async) {
+        <p>Loading...</p>
       } @else {
-      <div>
-        @for (todo of (todosArray$ | async); track todo.id) {
-        <app-todo [todo]="todo" />
-        }
-      </div>
+        <div>
+          @for (todo of queryResults.results$ | async; track todo.id) {
+            <app-todo [todo]="todo" />
+          }
+        </div>
       }
     </div>
   `,
@@ -153,10 +153,99 @@ export class AppComponent {
     client: triplit,
     query: triplit.query('todos').order('created_at', 'DESC'),
   }));
-  todosArray$ = this.queryResults.results$.pipe(
-    map((results) => {
-      return results ? [...results.values()] : undefined;
-    })
-  );
+}
+```
+
+### createInfiniteQuery
+
+The `createInfiniteQuery` hook is similar to `createQuery`, but it is used for expanding queries, that is, queries that start with an initial limit but grow beyond that. It returns an object with observable properties that contain the results of the query, fetching states and error states, if there are more available results, and a function to load more data. It's important to define a `limit` in the query to enable the initial pagination.
+
+```ts filename="app.component.ts"
+import { triplit } from '@/triplit/client.js';
+import { createInfiniteQuery } from '@triplit/angular';
+import { Component } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { TodoComponent } from './todo/todo.component.js';
+import { map } from 'rxjs';
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [TodoComponent, CommonModule],
+  template: `
+    <div>
+      @if (infiniteQuery.fetching$ | async) {
+        <p>Loading...</p>
+      } @else {
+        <div class="todos-container">
+          @for (todo of infiniteQuery.results$ | async; track todo.id) {
+            <app-todo [todo]="todo" />
+          }
+        </div>
+        <button
+          [disabled]="!(infiniteQuery.hasMore$ | async)"
+          (click)="infiniteQuery.loadMore(5)"
+        >
+          Load More
+        </button>
+      }
+    </div>
+  `,
+})
+export class AppComponent {
+  infiniteQuery = createInfiniteQuery(() => ({
+    client: triplit,
+    query: triplit.query('todos').order('created_at', 'DESC').limit(5),
+  }));
+}
+```
+
+### createPaginatedQuery
+
+The `createPaginatedQuery` hook is similar to `createQuery`, but it is used for paginated queries. It returns an object with observable properties that contain the results of the query, fetching states and error states, and functions to load the previous and next pages of data. It's important to define a `limit` in the query to enable pagination.
+
+```ts filename="app.component.ts"
+import { triplit } from '@/triplit/client.js';
+import { createPaginatedQuery } from '@triplit/angular';
+import { Component } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { TodoComponent } from './todo/todo.component.js';
+import { map } from 'rxjs';
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [TodoComponent, CommonModule],
+  template: `
+    <div>
+      @if (paginatedQuery.fetching$ | async) {
+        <p>Loading...</p>
+      } @else {
+        <div class="todos-container">
+          @for (todo of paginatedQuery.results$ | async; track todo.id) {
+            <app-todo [todo]="todo" />
+          }
+        </div>
+        <button
+          [disabled]="!(paginatedQuery.hasNextPage$ | async)"
+          (click)="paginatedQuery.nextPage()"
+        >
+          Next page
+        </button>
+        <button
+          [disabled]="!(paginatedQuery.hasPreviousPage$ | async)"
+          (click)="paginatedQuery.prevPage()"
+        >
+          Previous page
+        </button>
+      }
+    </div>
+  `,
+})
+export class AppComponent {
+  paginatedQuery = createPaginatedQuery(() => ({
+    client: triplit,
+    query: triplit.query('todos').order('created_at', 'DESC').limit(5),
+  }));
 }
 ```

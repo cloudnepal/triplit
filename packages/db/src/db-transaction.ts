@@ -12,16 +12,18 @@ import {
   Models,
   StoreSchema,
   PermissionWriteOperations,
-} from './schema/types';
+  SchemaDefinition,
+} from './schema/types/index.js';
+import { typeFromJSON } from './schema/serialization.js';
 import { nanoid } from 'nanoid';
 import CollectionQueryBuilder, {
   fetch,
   fetchOne,
   initialFetchExecutionContext,
   convertEntityToJS,
+  getEntitiesBeforeAndAfterNewTriples,
 } from './collection-query.js';
 import {
-  DBSerializationError,
   EntityNotFoundError,
   InvalidCollectionNameError,
   InvalidInsertDocumentError,
@@ -32,26 +34,16 @@ import {
   InvalidSchemaPathError,
   WritePermissionError,
   TriplitError,
+  MalformedSchemaError,
 } from './errors.js';
 import { ValuePointer } from '@sinclair/typebox/value';
 import DB, {
   CollectionNameFromModels,
-  CollectionFromModels,
   ModelFromModels,
-  CreateCollectionOperation,
-  DropCollectionOperation,
-  AddAttributeOperation,
-  DropAttributeOperation,
   DBFetchOptions,
-  AlterAttributeOptionOperation,
-  DropAttributeOptionOperation,
-  AddRuleOperation,
-  DropRuleOperation,
-  FetchByIdQueryParams,
   DBHooks,
   DEFAULT_STORE_KEY,
   EntityOpSet,
-  SetAttributeOptionalOperation,
   OpSet,
 } from './db.js';
 import {
@@ -63,15 +55,15 @@ import {
   fetchResultToJS,
 } from './db-helpers.js';
 import {
-  Entity,
   constructEntity,
   updateEntity,
-  triplesToEntities,
-} from './query.js';
-import { dbDocumentToTuples, timestampedObjectToPlainObject } from './utils.js';
-import { typeFromJSON } from './data-types/base.js';
-import { SchemaDefinition } from './data-types/serialization.js';
-import { createSetProxy } from './data-types/set.js';
+  Entity,
+  OBJECT_MARKER,
+  COLLECTION_ATTRIBUTE,
+  constructEntities,
+} from './entity.js';
+import { dbDocumentToTuples } from './utils.js';
+import { createSetProxy } from './data-types/definitions/set.js';
 import {
   EntityId,
   TripleStoreBeforeInsertHook,
@@ -83,22 +75,36 @@ import {
   TripleStoreAfterCommitHook,
 } from './triple-store-utils.js';
 import { TripleStoreApi } from './triple-store.js';
-import { RecordType } from './data-types/record.js';
+import { RecordType } from './data-types/definitions/record.js';
 import { Logger } from '@triplit/types/logger';
 import {
   CollectionQuery,
+  CollectionQueryDefault,
   FetchResult,
   FetchResultEntity,
   FetchResultEntityFromParts,
-  Query,
+  QueryWhere,
+  SchemaQueries,
+  ToQuery,
   Unalias,
-} from './query/types';
+} from './query/types/index.js';
 import { prepareQuery } from './query/prepare.js';
 import { getCollectionPermissions } from './schema/permissions.js';
+import { genToArr } from './utils/generator.js';
+import {
+  AddAttributePayload,
+  AddRulePayload,
+  AlterAttributeOptionPayload,
+  CreateCollectionPayload,
+  DropAttributeOptionPayload,
+  DropAttributePayload,
+  DropCollectionPayload,
+  DropRulePayload,
+  SetAttributeOptionalPayload,
+} from './db/types/operations.js';
+import { and, or } from './query.js';
 
-interface TransactionOptions<
-  M extends Models<any, any> | undefined = undefined
-> {
+interface TransactionOptions<M extends Models = Models> {
   schema?: StoreSchema<M>;
   skipRules?: boolean;
   logger?: Logger;
@@ -107,7 +113,7 @@ interface TransactionOptions<
 
 const EXEMPT_FROM_WRITE_RULES = new Set(['_metadata']);
 
-async function checkWritePermissions<M extends Models<any, any> | undefined>(
+async function checkWritePermissions<M extends Models>(
   dbTx: DBTransaction<M>,
   storeTx: TripleStoreApi,
   id: EntityId,
@@ -125,8 +131,8 @@ async function checkWritePermissions<M extends Models<any, any> | undefined>(
   // If no permissions for collection, its exempt from rules
   if (!permissions) return;
 
-  let permissionsStatements = [];
-  let hasMatch = false;
+  let permissionsStatements: QueryWhere<M, any>[] = [];
+  let hasMatchingPermission = false;
   if (sessionRoles) {
     for (const sessionRole of sessionRoles) {
       const rolePermissions = permissions[sessionRole.key];
@@ -136,27 +142,31 @@ async function checkWritePermissions<M extends Models<any, any> | undefined>(
 
       if (permission.filter) {
         // Must opt in to the permission
-        hasMatch = true;
+        hasMatchingPermission = true;
         // TODO: handle empty arrays
         if (Array.isArray(permission.filter)) {
-          permissionsStatements.push(...permission.filter);
+          permissionsStatements.push(permission.filter as QueryWhere<M, any>);
         }
       }
     }
   }
 
-  if (!hasMatch) {
+  if (!hasMatchingPermission) {
     // postUpdate is optional, so if there's nothing to check against, we can skip
     if (operation === 'postUpdate') return;
-    permissionsStatements = [false];
+    // Deny access
+    permissionsStatements = [[false]];
   }
 
   const query = prepareQuery(
     {
       collectionName,
-      where: [['id', '=', entityId], ...permissionsStatements],
+      where: [
+        ['id', '=', entityId],
+        or(permissionsStatements.map((filters) => and(filters))),
+      ],
     } as CollectionQuery<M, any>,
-    schema.collections,
+    schema.collections as M,
     {
       roles: dbTx.db.sessionRoles,
     },
@@ -166,13 +176,16 @@ async function checkWritePermissions<M extends Models<any, any> | undefined>(
     }
   );
 
-  const { results } = await fetchOne<M, any>(
-    dbTx.db,
+  const results = await fetchOne<M, any>(
     storeTx,
     query,
     initialFetchExecutionContext(),
     {
       schema: schema.collections,
+      session: {
+        systemVars: dbTx.db.systemVars,
+        roles: dbTx.db.sessionRoles,
+      },
     }
   );
   if (!results) {
@@ -185,8 +198,8 @@ async function checkWritePermissions<M extends Models<any, any> | undefined>(
   }
 }
 
-async function checkWriteRules<M extends Models<any, any> | undefined>(
-  caller: DBTransaction<M>,
+async function checkWriteRules<M extends Models>(
+  dbTx: DBTransaction<M>,
   tx: TripleStoreApi,
   id: EntityId,
   schema: StoreSchema<M> | undefined
@@ -206,21 +219,24 @@ async function checkWriteRules<M extends Models<any, any> | undefined>(
         collectionName,
         where: [['id', '=', entityId], ...rulesWhere],
       } as CollectionQuery<M, any>,
-      collections,
+      collections as M,
       {
-        roles: caller.db.sessionRoles,
+        roles: dbTx.db.sessionRoles,
       },
       {
         skipRules: false,
       }
     );
-    const { results } = await fetchOne<M, any>(
-      caller.db,
+    const results = await fetchOne<M, any>(
       tx,
       query,
       initialFetchExecutionContext(),
       {
         schema: collections,
+        session: {
+          systemVars: dbTx.db.systemVars,
+          roles: dbTx.db.sessionRoles,
+        },
       }
     );
     if (!results) {
@@ -230,23 +246,21 @@ async function checkWriteRules<M extends Models<any, any> | undefined>(
   }
 }
 
-function triplesToDeltaOpSet(triples: TripleRow[]): OpSet<any> {
-  const deltas = Array.from(triplesToEntities(triples).entries());
+function mapTxTriplesToOperations(triples: TripleRow[]): OpSet<string> {
+  const deltas = constructEntities(triples);
   const opSet: OpSet<any> = { inserts: [], updates: [], deletes: [] };
   for (const [id, delta] of deltas) {
     // default to update
     let operation: 'insert' | 'update' | 'delete' = 'update';
     // Inserts and deletes will include the _collection attribute
-    if ('_collection' in delta.data) {
-      // Deletes will set _collection to undefined
-      const isDelete = delta.data._collection[0] === undefined;
-      if (isDelete) operation = 'delete';
+    const collectionTriple = delta.findTriple('_collection');
+    if (collectionTriple) {
+      if (delta.isDeleted) operation = 'delete';
       else operation = 'insert';
     }
-
-    if (operation === 'insert') opSet.inserts.push([id, delta.data]);
-    else if (operation === 'update') opSet.updates.push([id, delta.data]);
-    else if (operation === 'delete') opSet.deletes.push([id, delta.data]);
+    if (operation === 'insert') opSet.inserts.push(id);
+    else if (operation === 'update') opSet.updates.push(id);
+    else if (operation === 'delete') opSet.deletes.push(id);
   }
   return opSet;
 }
@@ -255,55 +269,32 @@ async function triplesToEntityOpSet(
   triples: TripleRow[],
   tripleStore: TripleStoreApi
 ): Promise<EntityOpSet> {
-  const deltas = Array.from(triplesToEntities(triples).entries());
+  const entitiesBeforeAndAfter = await getEntitiesBeforeAndAfterNewTriples(
+    tripleStore,
+    triples
+  );
   const opSet: EntityOpSet = { inserts: [], updates: [], deletes: [] };
-  for (const [id, delta] of deltas) {
-    // default to update
-    let operation: 'insert' | 'update' | 'delete' = 'update';
-    // Inserts and deletes will include the _collection attribute
-    if ('_collection' in delta.data) {
-      // Deletes will set _collection to undefined
-      const isDelete = delta.data._collection[0] === undefined;
-      if (isDelete) operation = 'delete';
-      else operation = 'insert';
-    }
-
-    // Get the full entities from the triple store
-    const entity = constructEntity(await tripleStore.findByEntity(id), id);
-    if (!entity) continue;
+  for (const [id, { oldEntity, entity, operation }] of entitiesBeforeAndAfter) {
     switch (operation) {
       case 'insert':
-        opSet.inserts.push([
-          id,
-          timestampedObjectToPlainObject(entity.data) as any,
-        ]);
+        opSet.inserts.push([id, { oldEntity: null, entity: entity!.data }]);
         break;
       case 'update':
         // TODO: add deltas to update
         opSet.updates.push([
           id,
-          timestampedObjectToPlainObject(entity.data) as any,
+          { oldEntity: oldEntity!.data, entity: entity!.data },
         ]);
         break;
       case 'delete':
-        const [collection, externalId] = splitIdParts(id);
-        opSet.deletes.push([
-          id,
-          {
-            id: externalId,
-            _collection: collection,
-            // I don't expect an entity to have any data here as the
-            // triples are already tombstoned
-            ...(timestampedObjectToPlainObject(entity.data) as any),
-          },
-        ]);
+        opSet.deletes.push([id, { oldEntity: oldEntity!.data, entity: null }]);
         break;
     }
   }
   return opSet;
 }
 
-export class DBTransaction<M extends Models<any, any> | undefined> {
+export class DBTransaction<M extends Models> {
   schema: StoreSchema<M> | undefined;
   private _schema: Entity | undefined;
   private _permissionCache: Map<string, boolean> = new Map();
@@ -336,9 +327,9 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     triples,
     tx
   ) => {
-    const deltas = triplesToDeltaOpSet(triples);
+    const tripleOps = mapTxTriplesToOperations(triples);
     // Check permissions for updates before we've written
-    for (const [id, _delta] of deltas.updates) {
+    for (const id of tripleOps.updates) {
       await checkWritePermissions(this, tx, id, this.schema, 'update');
     }
   };
@@ -422,34 +413,48 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     triples,
     tx
   ) => {
-    const metadataTriples = triples.filter(
-      ({ attribute }) => attribute[0] === '_metadata'
+    const newSchemaTriples = triples.filter(
+      ({ id }) => id === '_metadata#_schema'
     );
-    if (metadataTriples.length === 0) return;
+    if (newSchemaTriples.length === 0) return;
 
     /**
-     * When using the migrations option in the DB constructor, we need to query the schema triples when the hook first fires to initialize _schema,
-     * otherwise the initial _schema value will just be the schema delta of the migration.
+     * If for whatever reason we havent loaded the schema yet, load it
      */
     if (!this._schema) {
       const { schemaTriples } = await readSchemaFromTripleStore(tx);
-      metadataTriples.unshift(...schemaTriples);
+      newSchemaTriples.unshift(...schemaTriples);
     }
 
-    this._schema = this._schema ?? new Entity();
-    updateEntity(this._schema, metadataTriples);
+    // clone the schema so we can test the update
+    const updatedSchema = this._schema
+      ? Entity.clone(this._schema)
+      : new Entity();
+    updateEntity(updatedSchema, newSchemaTriples);
+
+    const updateSchemaDefinition = updatedSchema.data as
+      | SchemaDefinition
+      | undefined;
+
+    // test that the updated schema is valid
+    let collections;
+    try {
+      collections =
+        updateSchemaDefinition?.collections &&
+        collectionsDefinitionToSchema(updateSchemaDefinition.collections);
+    } catch (e) {
+      if (e instanceof TriplitError) throw new MalformedSchemaError(e);
+      throw e;
+    }
+
+    this._schema = updatedSchema;
 
     // Type definitions are kinda ugly here
-    // @ts-expect-error - Probably want a way to override the output type of this
-    const schemaDefinition = timestampedObjectToPlainObject(
-      this._schema.data
-    ) as SchemaDefinition | undefined;
+    const schemaDefinition = this._schema?.data;
 
     this.schema = {
       version: schemaDefinition?.version ?? 0,
-      collections:
-        schemaDefinition?.collections &&
-        collectionsDefinitionToSchema(schemaDefinition.collections),
+      collections,
     } as StoreSchema<M>;
   };
 
@@ -477,10 +482,10 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     tx
   ) => {
     const hasBeforeCallbacks =
-      this.hooks.beforeCommit.length > 0 ||
-      this.hooks.beforeInsert.length > 0 ||
-      this.hooks.beforeUpdate.length > 0 ||
-      this.hooks.beforeDelete.length > 0;
+      this.hooks.beforeCommit.size > 0 ||
+      this.hooks.beforeInsert.size > 0 ||
+      this.hooks.beforeUpdate.size > 0 ||
+      this.hooks.beforeDelete.size > 0;
     if (!hasBeforeCallbacks) return;
 
     // At the moment, triggers only work for a single 'default' storage
@@ -488,37 +493,42 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     const triples = triplesByStorage[DEFAULT_STORE_KEY];
     const opSet = await triplesToEntityOpSet(triples, this.storeTx);
     if (opSet.inserts.length) {
-      for (const [hook, options] of this.hooks.beforeInsert) {
+      for (const [hook, options] of this.hooks.beforeInsert.values()) {
         const collectionInserts = opSet.inserts.filter(
           ([id]) => splitIdParts(id)[0] === options.collectionName
         );
-        for (const [id, entity] of collectionInserts) {
+        for (const [id, { entity }] of collectionInserts) {
           await hook({ entity, tx: this, db: this.db });
         }
       }
     }
     if (opSet.updates.length) {
-      for (const [hook, options] of this.hooks.beforeUpdate) {
+      for (const [hook, options] of this.hooks.beforeUpdate.values()) {
         const collectionUpdates = opSet.updates.filter(
           ([id]) => splitIdParts(id)[0] === options.collectionName
         );
-        for (const [id, entity] of collectionUpdates) {
-          await hook({ entity, tx: this, db: this.db });
+        for (const [id, { entity, oldEntity }] of collectionUpdates) {
+          await hook({
+            oldEntity,
+            entity,
+            tx: this,
+            db: this.db,
+          });
         }
       }
     }
     if (opSet.deletes.length) {
-      for (const [hook, options] of this.hooks.beforeDelete) {
+      for (const [hook, options] of this.hooks.beforeDelete.values()) {
         const collectionDeletes = opSet.deletes.filter(
           ([id]) => splitIdParts(id)[0] === options.collectionName
         );
-        for (const [id, entity] of collectionDeletes) {
-          await hook({ entity, tx: this, db: this.db });
+        for (const [id, { oldEntity }] of collectionDeletes) {
+          await hook({ oldEntity, tx: this, db: this.db });
         }
       }
     }
 
-    for (const [hook, options] of this.hooks.beforeCommit) {
+    for (const [hook, options] of this.hooks.beforeCommit.values()) {
       const inserts = opSet.inserts;
       // .filter(
       //   ([id]) => splitIdParts(id)[0] === options.collectionName
@@ -549,10 +559,10 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     tx
   ) => {
     const hasAfterCallbacks =
-      this.hooks.afterCommit.length > 0 ||
-      this.hooks.afterInsert.length > 0 ||
-      this.hooks.afterUpdate.length > 0 ||
-      this.hooks.afterDelete.length > 0;
+      this.hooks.afterCommit.size > 0 ||
+      this.hooks.afterInsert.size > 0 ||
+      this.hooks.afterUpdate.size > 0 ||
+      this.hooks.afterDelete.size > 0;
     if (!hasAfterCallbacks) return;
 
     // At the moment, triggers only work for a single 'default' storage
@@ -560,38 +570,44 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     const triples = triplesByStorage[DEFAULT_STORE_KEY];
     const opSet = await triplesToEntityOpSet(triples, this.db.tripleStore);
     if (opSet.inserts.length) {
-      for (const [hook, options] of this.hooks.afterInsert) {
+      for (const [hook, options] of this.hooks.afterInsert.values()) {
         const collectionInserts = opSet.inserts.filter(
           ([id]) => splitIdParts(id)[0] === options.collectionName
         );
-        for (const [_id, entity] of collectionInserts) {
+        for (const [_id, { entity }] of collectionInserts) {
+          if (!entity) continue;
           await hook({ entity, tx: this, db: this.db });
         }
       }
     }
     if (opSet.updates.length) {
-      for (const [hook, options] of this.hooks.afterUpdate) {
+      for (const [hook, options] of this.hooks.afterUpdate.values()) {
         const collectionUpdates = opSet.updates.filter(
           ([id]) => splitIdParts(id)[0] === options.collectionName
         );
 
-        for (const [_id, entity] of collectionUpdates) {
-          await hook({ entity, tx: this, db: this.db });
+        for (const [_id, { oldEntity, entity }] of collectionUpdates) {
+          await hook({
+            oldEntity,
+            entity,
+            tx: this,
+            db: this.db,
+          });
         }
       }
     }
     if (opSet.deletes.length) {
-      for (const [hook, options] of this.hooks.afterDelete) {
+      for (const [hook, options] of this.hooks.afterDelete.values()) {
         const collectionDeletes = opSet.deletes.filter(
           ([id]) => splitIdParts(id)[0] === options.collectionName
         );
-        for (const [_id, entity] of collectionDeletes) {
-          await hook({ entity, tx: this, db: this.db });
+        for (const [_id, { oldEntity }] of collectionDeletes) {
+          await hook({ oldEntity, tx: this, db: this.db });
         }
       }
     }
 
-    for (const [hook, options] of this.hooks.afterCommit) {
+    for (const [hook, _options] of this.hooks.afterCommit.values()) {
       const inserts = opSet.inserts;
       // .filter(
       //   ([id]) => splitIdParts(id)[0] === options.collectionName
@@ -618,8 +634,7 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
   };
 
   // Doing this as a TS fix, but would like to properly define the _metadata scheam
-  readonly METADATA_COLLECTION_NAME =
-    '_metadata' as CollectionNameFromModels<M>;
+  readonly METADATA_COLLECTION_NAME = '_metadata';
 
   // The original current schema operating on the transaction
   async getSchema() {
@@ -629,13 +644,10 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
   // Read the current schema based on stored data
   async getSchemaFromStore() {
     const { schemaTriples } = await readSchemaFromTripleStore(this.storeTx);
-    const entity = new Entity();
-    updateEntity(entity, schemaTriples);
+    const entity = new Entity(schemaTriples);
     // Type definitions are kinda ugly here
-    // @ts-expect-error - Probably want a way to override the output type of this
-    const schemaDefinition = timestampedObjectToPlainObject(entity.data) as
-      | SchemaDefinition
-      | undefined;
+    // // @ts-expect-error - Probably want a way to override the output type of this
+    const schemaDefinition = entity.data as SchemaDefinition | undefined;
 
     return {
       version: schemaDefinition?.version ?? 0,
@@ -666,14 +678,14 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     await this.storeTx.cancel();
   }
 
-  get isCancelled() {
-    return this.storeTx.isCancelled;
+  get isCanceled() {
+    return this.storeTx.isCanceled;
   }
 
   async insert<CN extends CollectionNameFromModels<M>>(
     collectionName: CN,
     doc: Unalias<InsertTypeFromModel<ModelFromModels<M, CN>>>
-  ) {
+  ): Promise<Unalias<FetchResultEntityFromParts<M, CN>>> {
     if (!collectionName)
       throw new InvalidCollectionNameError(
         collectionName,
@@ -704,6 +716,7 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     };
 
     const fullDoc = clientInputToDbModel(
+      // @ts-expect-error
       inputWithDefaults,
       collectionSchema?.schema
     );
@@ -729,7 +742,7 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     );
     triples.push({
       id: storeId,
-      attribute: ['_collection'],
+      attribute: COLLECTION_ATTRIBUTE,
       value: collectionName,
       timestamp,
       expired: false,
@@ -737,13 +750,13 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
 
     // insert triples
     await this.storeTx.insertTriples(triples);
-    const insertedEntity = constructEntity(triples, storeId);
+    const insertedEntity = constructEntity(triples, storeId, schema);
     if (!insertedEntity) throw new Error('Malformed id');
     const insertedEntityJS = convertEntityToJS(
       insertedEntity.data as any,
       schema,
       collectionName
-    ) as Unalias<FetchResultEntityFromParts<M, CN>>;
+    );
     this.logger.debug('insert END', collectionName, insertedEntityJS);
     return insertedEntityJS;
   }
@@ -754,7 +767,7 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     updater: (
       entity: Unalias<UpdateTypeFromModel<ModelFromModels<M, CN>>>
     ) => void | Promise<void>
-  ) {
+  ): Promise<void> {
     this.logger.debug('update START', collectionName, entityId);
     const schema = (await this.getSchema())?.collections as M;
 
@@ -784,26 +797,28 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     collectionName: CN,
     entityId: string,
     callback: (
-      entity: any
+      entity: Record<string, any>
     ) => [Attribute, TupleValue][] | Promise<[Attribute, TupleValue][]>
   ) {
     this.logger.debug('updateRaw START');
 
     const storeId = appendCollectionToId(collectionName, entityId);
 
-    const entityTriples = await this.storeTx.findByEntity(storeId);
-    const timestampedEntity = constructEntity(entityTriples, storeId);
-    const entity = timestampedObjectToPlainObject(timestampedEntity!.data);
-    // If entity doesn't exist or is deleted, throw error
-    // Schema/metadata does not have _collection attribute
-    if (collectionName !== '_metadata' && !entity?._collection) {
+    const entityTriples = await genToArr(this.storeTx.findByEntity(storeId));
+    const entity = constructEntity(
+      entityTriples,
+      storeId,
+      (await this.getSchema())?.collections
+    );
+    if (entityTriples.length === 0 || !entity || entity.isDeleted) {
       throw new EntityNotFoundError(
         entityId,
         collectionName,
         "Cannot perform an update on an entity that doesn't exist"
       );
     }
-    const changeTuples = await callback(entity);
+    const materializedData = entity.data;
+    const changeTuples = await callback(materializedData);
     for (const [attr, value] of changeTuples) {
       if (attr.at(0) === 'id') {
         throw new InvalidOperationError(
@@ -817,7 +832,7 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
       const [attr, value] = tuple;
       const storeAttribute = [collectionName, ...attr];
       // undefined is treated as a delete
-      if (value === undefined || value === '{}') {
+      if (value === undefined || value === OBJECT_MARKER) {
         await this.storeTx.expireEntityAttributes([
           { id: storeId, attribute: storeAttribute },
         ]);
@@ -850,10 +865,10 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     this.logger.debug('delete END', collectionName, id);
   }
 
-  async fetch<Q extends CollectionQuery<M, any>>(
+  async fetch<Q extends SchemaQueries<M>>(
     query: Q,
     options: DBFetchOptions = {}
-  ): Promise<Unalias<FetchResult<Q>>> {
+  ): Promise<Unalias<FetchResult<M, ToQuery<M, Q>>>> {
     const schema = (await this.getSchema())?.collections as M;
     const fetchQuery = prepareQuery(
       query,
@@ -865,40 +880,48 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     );
     // TODO: read scope?
     // See difference between this fetch and db fetch
-    const { results } = await fetch<M, Q>(
-      this.db,
+    const results = await fetch<M, Q>(
       this.storeTx,
       fetchQuery,
       initialFetchExecutionContext(),
       {
         schema,
+        skipIndex: options.skipIndex,
+        session: {
+          systemVars: this.db.systemVars,
+          roles: this.db.sessionRoles,
+        },
       }
     );
-    return fetchResultToJS(results, schema, fetchQuery.collectionName);
+    return fetchResultToJS(
+      results,
+      schema,
+      fetchQuery.collectionName
+    ) as Unalias<FetchResult<M, Q>>;
   }
 
   // maybe make it public? Keeping private bc its only used internally
-  private query<CN extends CollectionNameFromModels<M>>(
-    collectionName: CN,
-    params?: Query<M, CN>
-  ) {
-    // TODO: When fixing the type here, ensure the built output looks correct (had to manually assign this to work in the past)
-    return CollectionQueryBuilder(collectionName, params);
+  private query<CN extends CollectionNameFromModels<M>>(collectionName: CN) {
+    return CollectionQueryBuilder<M, CN>(collectionName);
   }
 
   async fetchById<CN extends CollectionNameFromModels<M>>(
     collectionName: CN,
     id: string,
     options: DBFetchOptions = {}
-  ) {
-    const query = this.query(collectionName).id(id).build();
-    return this.fetchOne(query, options);
+  ): Promise<Unalias<
+    FetchResultEntity<M, ToQuery<M, CollectionQueryDefault<M, CN>>>
+  > | null> {
+    const query = this.query(collectionName).id(id).build() as SchemaQueries<M>;
+    return this.fetchOne(query, options) as Promise<Unalias<
+      FetchResultEntity<M, ToQuery<M, CollectionQueryDefault<M, CN>>>
+    > | null>;
   }
 
-  async fetchOne<Q extends CollectionQuery<M, any>>(
+  async fetchOne<Q extends SchemaQueries<M>>(
     query: Q,
     options: DBFetchOptions = {}
-  ): Promise<Unalias<FetchResultEntity<Q>> | null> {
+  ): Promise<Unalias<FetchResultEntity<M, ToQuery<M, Q>>> | null> {
     query = { ...query, limit: 1 };
     const result = await this.fetch(query, options);
     const entity = [...result.values()][0];
@@ -918,7 +941,7 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     }
   }
 
-  async createCollection(params: CreateCollectionOperation[1]) {
+  async createCollection(params: CreateCollectionPayload) {
     // Create schema object so it can be updated
     await this.checkOrCreateSchema();
     // The set of params here is unfortunately awkward to add to because of the way the schema is stored
@@ -933,7 +956,10 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     await this.update(
       this.METADATA_COLLECTION_NAME,
       '_schema',
-      async (schemaEntity) => {
+      async (entity) => {
+        const schemaEntity = entity as UpdateTypeFromModel<
+          ModelFromModels<Models, string>
+        >;
         // If there are no collections, create property
         if (!schemaEntity.collections) schemaEntity.collections = {};
         const sortedOptional = optional ? optional.slice().sort() : undefined;
@@ -954,25 +980,31 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     );
   }
 
-  async dropCollection(params: DropCollectionOperation[1]) {
+  async dropCollection(params: DropCollectionPayload) {
     const { name: collectionName } = params;
     await this.update(
       this.METADATA_COLLECTION_NAME,
       '_schema',
-      async (schema) => {
+      async (entity) => {
+        const schema = entity as UpdateTypeFromModel<
+          ModelFromModels<Models, string>
+        >;
         if (!schema.collections) schema.collections = {};
         delete schema.collections[collectionName];
       }
     );
   }
 
-  async addAttribute(params: AddAttributeOperation[1]) {
+  async addAttribute(params: AddAttributePayload) {
     const { collection: collectionName, path, attribute, optional } = params;
     validatePath(path);
     await this.update(
       this.METADATA_COLLECTION_NAME,
       '_schema',
-      async (schema) => {
+      async (entity) => {
+        const schema = entity as UpdateTypeFromModel<
+          ModelFromModels<Models, string>
+        >;
         validateCollectionName(schema.collections, collectionName);
 
         const parentPath = path.slice(0, -1);
@@ -992,13 +1024,16 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     );
   }
 
-  async dropAttribute(params: DropAttributeOperation[1]) {
+  async dropAttribute(params: DropAttributePayload) {
     const { collection: collectionName, path } = params;
     validatePath(path);
     await this.update(
       this.METADATA_COLLECTION_NAME,
       '_schema',
-      async (schema) => {
+      async (entity) => {
+        const schema = entity as UpdateTypeFromModel<
+          ModelFromModels<Models, string>
+        >;
         validateCollectionName(schema.collections, collectionName);
 
         const parentPath = path.slice(0, -1);
@@ -1017,13 +1052,16 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     );
   }
 
-  async alterAttributeOption(params: AlterAttributeOptionOperation[1]) {
+  async alterAttributeOption(params: AlterAttributeOptionPayload) {
     const { collection: collectionName, path, options } = params;
     validatePath(path);
     await this.update(
       this.METADATA_COLLECTION_NAME,
       '_schema',
-      async (schema) => {
+      async (entity) => {
+        const schema = entity as UpdateTypeFromModel<
+          ModelFromModels<Models, string>
+        >;
         validateCollectionName(schema.collections, collectionName);
 
         const parentPath = path.slice(0, -1);
@@ -1051,13 +1089,16 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     );
   }
 
-  async dropAttributeOption(params: DropAttributeOptionOperation[1]) {
+  async dropAttributeOption(params: DropAttributeOptionPayload) {
     const { collection: collectionName, path, option } = params;
     validatePath(path);
     await this.update(
       this.METADATA_COLLECTION_NAME,
       '_schema',
-      async (schema) => {
+      async (entity) => {
+        const schema = entity as UpdateTypeFromModel<
+          ModelFromModels<Models, string>
+        >;
         validateCollectionName(schema.collections, collectionName);
 
         const parentPath = path.slice(0, -1);
@@ -1081,12 +1122,15 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     );
   }
 
-  async addRule(params: AddRuleOperation[1]) {
+  async addRule(params: AddRulePayload) {
     const { collection, scope, id, rule } = params;
     await this.update(
       this.METADATA_COLLECTION_NAME,
       '_schema',
-      async (schema) => {
+      async (entity) => {
+        const schema = entity as UpdateTypeFromModel<
+          ModelFromModels<Models, string>
+        >;
         const collectionAttributes = schema.collections[collection];
         if (!collectionAttributes.rules) collectionAttributes.rules = {};
         if (!collectionAttributes.rules[scope])
@@ -1096,25 +1140,31 @@ export class DBTransaction<M extends Models<any, any> | undefined> {
     );
   }
 
-  async dropRule(params: DropRuleOperation[1]) {
+  async dropRule(params: DropRulePayload) {
     const { collection, scope, id } = params;
     await this.update(
       this.METADATA_COLLECTION_NAME,
       '_schema',
-      async (schema) => {
+      async (entity) => {
+        const schema = entity as UpdateTypeFromModel<
+          ModelFromModels<Models, string>
+        >;
         const collectionAttributes = schema.collections[collection];
         delete collectionAttributes.rules[scope][id];
       }
     );
   }
 
-  async setAttributeOptional(params: SetAttributeOptionalOperation[1]) {
+  async setAttributeOptional(params: SetAttributeOptionalPayload) {
     const { collection: collectionName, path, optional } = params;
     validatePath(path);
     await this.update(
       this.METADATA_COLLECTION_NAME,
       '_schema',
-      async (schema) => {
+      async (entity) => {
+        const schema = entity as UpdateTypeFromModel<
+          ModelFromModels<Models, string>
+        >;
         validateCollectionName(schema.collections, collectionName);
 
         const parentPath = path.slice(0, -1);
@@ -1239,11 +1289,11 @@ export class ChangeTracker {
 }
 
 export function createUpdateProxy<
-  M extends Models<any, any> | undefined,
-  CN extends CollectionNameFromModels<M>
+  M extends Models,
+  CN extends CollectionNameFromModels<M> = CollectionNameFromModels<M>,
 >(
   changeTracker: ChangeTracker,
-  entityObj: any, // TODO: type this properly, should be an untimestamped entity
+  entityObj: Record<string, any>,
   schema?: M,
   collectionName?: CN,
   prefix: string = ''

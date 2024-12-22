@@ -1,5 +1,375 @@
 # @triplit/client
 
+## 0.6.12
+
+### Patch Changes
+
+- Updated dependencies [6d348d3d]
+  - @triplit/db@0.5.19
+
+## 0.6.11
+
+### Patch Changes
+
+- Updated dependencies [398da292]
+  - @triplit/db@0.5.18
+
+## 0.6.10
+
+### Patch Changes
+
+- Updated dependencies [a80dbe04]
+  - @triplit/db@0.5.17
+
+## 0.6.9
+
+### Patch Changes
+
+- 4ccc6422: upgrade @sinclair/typebox
+- Updated dependencies [4ccc6422]
+  - @triplit/db@0.5.16
+
+## 0.6.8
+
+### Patch Changes
+
+- Updated dependencies [f3186500]
+- Updated dependencies [e5ff046f]
+  - @triplit/db@0.5.15
+
+## 0.6.7
+
+### Patch Changes
+
+- Updated dependencies [b2b3eae5]
+  - @triplit/db@0.5.14
+
+## 0.6.6
+
+### Patch Changes
+
+- Updated dependencies [7bbc8e53]
+  - @triplit/db@0.5.13
+
+## 0.6.5
+
+### Patch Changes
+
+- Updated dependencies [bb973df7]
+  - @triplit/db@0.5.12
+
+## 0.6.4
+
+### Patch Changes
+
+- 6de9aaf4: add ability to custom name storages without providing instances
+
+## 0.6.3
+
+### Patch Changes
+
+- 483c84b6: fix refresh interval
+
+## 0.6.2
+
+### Patch Changes
+
+- 2541c6e2: various fixups for the sessions API
+- Updated dependencies [8e9511dc]
+- Updated dependencies [a2532548]
+  - @triplit/db@0.5.11
+
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [a0932216]
+  - @triplit/db@0.5.10
+
+## 0.6.0
+
+### Minor Changes
+
+- 2713ca43: Implement new sessions API
+
+### Patch Changes
+
+- Updated dependencies [2713ca43]
+  - @triplit/db@0.5.9
+
+## 0.5.17
+
+### Patch Changes
+
+- f1ce9675: Prevent possible error in client subscription race condition
+- Updated dependencies [bdebed22]
+- Updated dependencies [7b1839b6]
+  - @triplit/db@0.5.8
+
+## 0.5.16
+
+### Patch Changes
+
+- Updated dependencies [9107e262]
+- Updated dependencies [0cc53c85]
+- Updated dependencies [cb785390]
+  - @triplit/db@0.5.7
+
+## 0.5.15
+
+### Patch Changes
+
+- Updated dependencies [dd8278d1]
+  - @triplit/db@0.5.6
+
+## 0.5.14
+
+### Patch Changes
+
+- Updated dependencies [8f004df6]
+  - @triplit/db@0.5.5
+
+## 0.5.13
+
+### Patch Changes
+
+- bdd50e7f: Fixup worker client subscribeBackground
+
+## 0.5.12
+
+### Patch Changes
+
+- Updated dependencies [e9eb5c26]
+  - @triplit/db@0.5.4
+
+## 0.5.11
+
+### Patch Changes
+
+- 8c97bfdb: Add experimental entity cache
+- 57d1e24b: Add onFulfilled to background subscription
+- Updated dependencies [f201dd5a]
+- Updated dependencies [8c97bfdb]
+  - @triplit/db@0.5.3
+
+## 0.5.10
+
+### Patch Changes
+
+- 3d5e879d: Pass remote sync errors to subscription error handlers
+- Updated dependencies [aca9cf75]
+- Updated dependencies [3d5e879d]
+  - @triplit/db@0.5.2
+
+## 0.5.9
+
+### Patch Changes
+
+- @triplit/db@0.5.1
+
+## 0.5.8
+
+### Patch Changes
+
+- ccfa038c: Add method subscribeBackground() for sync in background
+- Updated dependencies [3984bc94]
+- Updated dependencies [94417d39]
+  - @triplit/db@0.5.0
+
+## 0.5.7
+
+### Patch Changes
+
+- Updated dependencies [15815dc2]
+- Updated dependencies [23b6171d]
+  - @triplit/db@0.4.6
+
+## 0.5.6
+
+### Patch Changes
+
+- 3ca5265f: Fix query syncin race condition that occured with React Strict mode's double rendering behavior
+
+## 0.5.5
+
+### Patch Changes
+
+- 16687b5a: Fix race condition with rapid query disconnects
+- c9fde067: fixup bug causing duplicate query tracking when syncStatus is assigned
+- Updated dependencies [c9fde067]
+  - @triplit/db@0.4.5
+
+## 0.5.4
+
+### Patch Changes
+
+- Updated dependencies [f7ab3c65]
+  - @triplit/db@0.4.4
+
+## 0.5.3
+
+### Patch Changes
+
+- Updated dependencies [80a1d44b]
+  - @triplit/db@0.4.3
+
+## 0.5.2
+
+### Patch Changes
+
+- 3feda93e: export all client types
+- Updated dependencies [c0365bd9]
+- Updated dependencies [5305bc0f]
+  - @triplit/db@0.4.2
+
+## 0.5.1
+
+### Patch Changes
+
+- 761648cf: Properly handle optional props in Entity type, add type EntityWithSelection for including a selection or inclusion with Entity
+- Updated dependencies [8966b0fe]
+- Updated dependencies [761648cf]
+  - @triplit/db@0.4.1
+
+## 0.5.0
+
+### Minor Changes
+
+- 0a09013b: Sunset migrations API
+- f894e435: update query return type to array
+- abe8bea8: Sunset client.remote, RemoteClient, server config param
+- 38746526: Add reset API for full state resets of client, updateToken and updateOptions do not automatically reconnect anymore
+- abe8bea8: Sunset entityId() in builder
+
+### Patch Changes
+
+- Updated dependencies [0a09013b]
+- Updated dependencies [38746526]
+- Updated dependencies [f894e435]
+- Updated dependencies [abe8bea8]
+  - @triplit/db@0.4.0
+
+## 0.4.13
+
+### Patch Changes
+
+- 3c7fd004: Add WorkerInternalClient class for reuse inside Workers
+- Updated dependencies [5fed7f42]
+  - @triplit/db@0.3.75
+
+## 0.4.12
+
+### Patch Changes
+
+- Updated dependencies [5eae93dc]
+  - @triplit/db@0.3.74
+
+## 0.4.11
+
+### Patch Changes
+
+- Updated dependencies [99a5b854]
+  - @triplit/db@0.3.73
+
+## 0.4.10
+
+### Patch Changes
+
+- @triplit/db@0.3.72
+
+## 0.4.9
+
+### Patch Changes
+
+- a902f8b8: unify session variable transformation logic
+- Updated dependencies [4f99c558]
+- Updated dependencies [a902f8b8]
+  - @triplit/db@0.3.71
+
+## 0.4.8
+
+### Patch Changes
+
+- 7ea2a0a9: dedupe queries in sync engine
+
+## 0.4.7
+
+### Patch Changes
+
+- b5374280: Update client types
+- 22b3e245: add getSchema methods to WorkerClient
+- Updated dependencies [104027d8]
+- Updated dependencies [833b69c9]
+- Updated dependencies [ecc5a959]
+  - @triplit/db@0.3.70
+
+## 0.4.6
+
+### Patch Changes
+
+- d11d57e2: Use async generators for tuple scans rather than arrays for lazy pagination of indexes that will reduce memory and increase performance on large datasets
+- Updated dependencies [96d4d8ff]
+- Updated dependencies [d11d57e2]
+- Updated dependencies [ffb00f68]
+  - @triplit/db@0.3.69
+
+## 0.4.5
+
+### Patch Changes
+
+- 51cde34e: fix bug where updating token wouldn't add session vars
+- Updated dependencies [79df5162]
+  - @triplit/db@0.3.68
+
+## 0.4.4
+
+### Patch Changes
+
+- e6e07458: export QueryResult type helper
+
+## 0.4.3
+
+### Patch Changes
+
+- Updated dependencies [38bdff77]
+  - @triplit/db@0.3.67
+
+## 0.4.2
+
+### Patch Changes
+
+- bbc64ede: Extend Entity type to include selection and inclusions
+- 12650423: Fix update method not working with WorkerClient
+- bbc64ede: Add helper type for QueryResult
+- Updated dependencies [73d638ec]
+  - @triplit/db@0.3.66
+
+## 0.4.1
+
+### Patch Changes
+
+- 0139e1a4: Improve support for nested queries and results, add subquery to query builder"
+- Updated dependencies [28d32b51]
+- Updated dependencies [0139e1a4]
+  - @triplit/db@0.3.65
+
+## 0.4.0
+
+### Minor Changes
+
+- f9470ad1: Add basic support for syncing server with an upstream server
+
+### Patch Changes
+
+- ba9f0d6c: more intelligently initialize workerClient connecting state
+- 6d249ce2: throw when browser APIs invoked but not available
+
+## 0.3.84
+
+### Patch Changes
+
+- 9857d9de: prettify HttpClient inputs and outputs
+
 ## 0.3.83
 
 ### Patch Changes

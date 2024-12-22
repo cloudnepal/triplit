@@ -6,6 +6,7 @@ import {
 } from '../src/schema/diff.js';
 import { Schema as S } from '../src/schema/builder.js';
 import DB, { DBTransaction, Models } from '../src/index.js';
+import { pause } from './utils/async.js';
 
 function wrapSchema(definition: any) {
   return {
@@ -429,10 +430,6 @@ describe('detecting dangerous edits', () => {
   });
 });
 
-function pause(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 describe('rules', () => {
   it('can detect changes to rules', () => {
     const schemaA = {
@@ -455,7 +452,7 @@ describe('rules', () => {
             read: { 'cant-read': { filter: [false] } },
           },
         },
-      } satisfies Models<any, any>,
+      } satisfies Models,
     };
 
     const diff = diffSchemas(schemaA, schemaB);
@@ -484,7 +481,7 @@ describe('rules', () => {
             read: { 'cant-read': { filter: [false] } },
           },
         },
-      } satisfies Models<any, any>,
+      } satisfies Models,
     };
 
     const diff = diffSchemas(schemaA, schemaB);
@@ -513,7 +510,7 @@ describe('rules', () => {
         test: {
           schema: S.Schema({ id: S.Id() }),
         },
-      } satisfies Models<any, any>,
+      } satisfies Models,
     };
 
     const diff = diffSchemas(schemaA, schemaB);
@@ -626,7 +623,7 @@ describe('permissions', () => {
             },
           },
         },
-      } satisfies Models<any, any>,
+      } satisfies Models,
     };
     const schemaB = {
       version: 0,
@@ -639,7 +636,7 @@ describe('permissions', () => {
             },
           },
         },
-      } satisfies Models<any, any>,
+      } satisfies Models,
     };
     const diff = diffSchemas(schemaA, schemaB);
     expect(diff).toStrictEqual([
@@ -656,7 +653,7 @@ describe('permissions', () => {
         test: {
           schema: S.Schema({ id: S.Id() }),
         },
-      } satisfies Models<any, any>,
+      } satisfies Models,
     };
     const schemaB = {
       version: 0,
@@ -669,7 +666,7 @@ describe('permissions', () => {
             },
           },
         },
-      } satisfies Models<any, any>,
+      } satisfies Models,
     };
     const diff = diffSchemas(schemaA, schemaB);
     expect(diff).toStrictEqual([
@@ -691,7 +688,7 @@ describe('permissions', () => {
             },
           },
         },
-      } satisfies Models<any, any>,
+      } satisfies Models,
     };
     const schemaB = {
       version: 0,
@@ -699,7 +696,7 @@ describe('permissions', () => {
         test: {
           schema: S.Schema({ id: S.Id() }),
         },
-      } satisfies Models<any, any>,
+      } satisfies Models,
     };
     const diff = diffSchemas(schemaA, schemaB);
     expect(diff).toStrictEqual([

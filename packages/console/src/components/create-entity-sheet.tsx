@@ -35,7 +35,7 @@ import {
 import { TriplitClient } from '@triplit/client';
 import { Plus } from 'lucide-react';
 import { nanoid } from 'nanoid';
-import { flattenSchema } from 'src/utils/flatten-schema.js';
+import { RoleFilters } from './role-filters.js';
 
 interface FormValues {
   id: string;
@@ -120,7 +120,7 @@ function initializeNewEntityForm(
   const attributes = (
     Object.entries(collection.schema.properties) as [
       string,
-      Exclude<AttributeDefinition, RecordAttributeDefinition>
+      Exclude<AttributeDefinition, RecordAttributeDefinition>,
     ][]
   )
     .filter(
@@ -176,7 +176,7 @@ export function CreateEntitySheet({
 }: {
   collection: string;
   inferredAttributes?: string[];
-  collectionSchema?: Collection<any>;
+  collectionSchema?: CollectionDefinition;
   client: TriplitClient<any>;
 }) {
   const [open, setOpen] = useState(false);
@@ -449,20 +449,40 @@ export function CreateEntitySheet({
           <SheetDescription>
             Create a new entity in <Code>{collection}</Code>
           </SheetDescription>
+          {collectionSchema && collectionSchema.permissions && (
+            <RoleFilters
+              rule="insert"
+              permissions={collectionSchema.permissions}
+              client={client}
+            />
+          )}
         </SheetHeader>
         <form
           onSubmit={async (e) => {
             e.preventDefault();
             try {
               let entity = convertFormToEntity(form.values.attributes);
-              if (form.values.id)
+              if (form.values.id) {
                 entity = Object.assign(entity, { id: form.values.id });
+              }
 
-              await client.insert(collection, entity);
-              form.reset();
-              setOpen(false);
+              const { txId } = await client.transact(async (tx) => {
+                await tx.insert(collection, entity);
+              });
+
+              client.syncEngine.onTxCommit(txId, () => {
+                console.log('Transaction succeeded on the server');
+                form.reset();
+                setOpen(false);
+              });
+
+              client.syncEngine.onTxFailure(txId, (e) => {
+                console.error('Transaction failed on the server', e);
+                const shouldRetry = false;
+                client.syncEngine.rollback(txId);
+              });
             } catch (e) {
-              console.error(e);
+              console.error('Transaction setup failed', e);
             }
           }}
           className="flex flex-col gap-10 mt-8"

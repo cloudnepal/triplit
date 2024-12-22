@@ -1,31 +1,28 @@
 import {
   FetchExecutionContext,
   FetchFromStorageOptions,
-  TimestampedFetchResult,
   getQueryVariables,
-  subscribeResultsAndTriples,
+  subscribeEntities,
 } from './collection-query.js';
-import {
-  CollectionNameFromModels,
-  ModelFromModels,
-  SystemVariables,
-} from './db.js';
-import { isValueVariable } from './db-helpers.js';
+import { CollectionNameFromModels } from './db.js';
+import { isValueVariable, replaceVariable } from './db-helpers.js';
 import { isFilterStatement } from './query.js';
-import { CollectionQuery, FilterStatement } from './query/types';
+import { CollectionQuery, FilterStatement } from './query/types/index.js';
 import { getSchemaFromPath } from './schema/schema.js';
-import { Models } from './schema/types';
+import { Model, Models } from './schema/types/index.js';
 import * as TB from '@sinclair/typebox/value';
 import type DB from './db.js';
 import { QueryCacheError } from './errors.js';
 import { TripleRow } from './triple-store-utils.js';
+import { QueryExecutionCache } from './query/execution-cache.js';
+import { Entity } from './entity.js';
 
-export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
+export class VariableAwareCache<Schema extends Models> {
   cache: Map<
     BigInt,
     {
-      results: Map<string, any>;
-      triples: Map<string, TripleRow[]>;
+      results: Map<string, Entity>;
+      triples: TripleRow[];
     }
   >;
 
@@ -33,11 +30,10 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
     this.cache = new Map();
   }
 
-  static canCacheQuery<
-    M extends Models<any, any> | undefined,
-    CN extends CollectionNameFromModels<M>,
-    Q extends CollectionQuery<M, CN>
-  >(query: Q, model?: ModelFromModels<M, CN> | undefined) {
+  static canCacheQuery(
+    query: CollectionQuery<any, any>,
+    model?: Model | undefined
+  ) {
     // if (!model) return false;
     if (query.limit !== undefined) return false;
     if (query.where && query.where.some((f) => !isFilterStatement(f)))
@@ -50,7 +46,7 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
       return false;
 
     const statements = (query.where ?? []).filter(isFilterStatement);
-    const variableStatements: FilterStatement<M, CN>[] = statements.filter(
+    const variableStatements: FilterStatement<any, any>[] = statements.filter(
       ([, , v]) => typeof v === 'string' && v.startsWith('$')
     );
     if (variableStatements.length !== 1) return false;
@@ -73,21 +69,29 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
   ) {
     return new Promise<void>((resolve) => {
       const id = this.viewQueryToId(viewQuery);
-      subscribeResultsAndTriples<Schema, Q>(
-        this.db,
+      subscribeEntities<Schema, Q>(
         this.db.tripleStore,
         viewQuery,
-        ([results, triples]) => {
-          this.cache.set(id, { results, triples });
+        {
+          schema,
+          skipRules: true,
+          session: {
+            roles: this.db.sessionRoles,
+            systemVars: this.db.systemVars,
+          },
+        },
+        (entities) => {
+          this.cache.set(id, {
+            results: entities,
+            triples: Array.from(entities.values())
+              .map((entity) => entity.triples)
+              .flat(),
+          });
           resolve();
         },
         (err) => {
           console.error('error in view', err);
           this.cache.delete(id);
-        },
-        {
-          schema,
-          skipRules: true,
         }
       );
     });
@@ -99,31 +103,20 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
 
   async resolveFromCache<Q extends CollectionQuery<Schema, any>>(
     query: Q,
-    systemVars: SystemVariables | undefined,
     executionContext: FetchExecutionContext,
     options: FetchFromStorageOptions
-  ): Promise<{
-    results: TimestampedFetchResult<Q>;
-    triples: Map<string, TripleRow[]>;
-  }> {
+  ): Promise<string[]> {
     const { views, variableFilters } = this.queryToViews(query);
     const id = this.viewQueryToId(views[0]);
     if (!this.cache.has(id)) {
       // NOTE: dangerously setting ! on options.schema (not sure if schema is actually required or not)
-      await this.createView(views[0], options.schema!);
+      await this.createView(views[0], options.schema! as Schema);
     }
     // TODO support multiple variable clauses
     const [prop, op, varStr] = variableFilters[0];
     const varKey = (varStr as string).slice(1);
-    const vars = getQueryVariables(
-      query,
-      {
-        systemVars: this.db.systemVars,
-        roles: this.db.sessionRoles,
-      },
-      executionContext
-    );
-    const varValue = vars![varKey];
+    const vars = getQueryVariables(query, executionContext, options);
+    const varValue = replaceVariable(varStr, vars);
     const view = this.cache.get(id)!;
     const viewResultEntries = [...view.results.entries()];
     let start, end;
@@ -131,7 +124,7 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
       start = binarySearch(
         viewResultEntries,
         varValue,
-        ([, ent]) => ent[prop],
+        ([, ent]) => ent.data[prop],
         'start',
         (a, b) => {
           if (op === '<') return a < b ? 0 : 1;
@@ -144,7 +137,7 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
       end = binarySearch(
         viewResultEntries,
         varValue,
-        ([, ent]) => ent[prop],
+        ([, ent]) => ent.data[prop],
         'end',
         (a, b) => {
           if (op === '<') return a < b ? 0 : 1;
@@ -159,7 +152,7 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
       start = binarySearch(
         viewResultEntries,
         varValue,
-        ([, ent]) => ent[prop],
+        ([, ent]) => ent.data[prop],
         'start',
         (a, b) => {
           return a === b ? 0 : a < b ? -1 : 1;
@@ -168,7 +161,7 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
       end = binarySearch(
         viewResultEntries,
         varValue,
-        ([, ent]) => ent[prop],
+        ([, ent]) => ent.data[prop],
         'end',
         (a, b) => {
           return a === b ? 0 : a < b ? -1 : 1;
@@ -178,12 +171,13 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
         ...viewResultEntries.slice(0, start + 1),
         ...viewResultEntries.slice(end),
       ];
-      return {
-        results: new Map(resultEntries) as TimestampedFetchResult<Q>,
-        triples: new Map(
-          resultEntries.map(([id, _]) => [id, view.triples.get(id)!])
-        ),
-      };
+      loadViewResultIntoExecutionCache(
+        resultEntries,
+        query,
+        view,
+        executionContext
+      );
+      return resultEntries.map(([key]) => key);
     }
     if (start == undefined || end == undefined) {
       throw new QueryCacheError(
@@ -198,18 +192,18 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
       );
     }
     const resultEntries = viewResultEntries.slice(start, end + 1);
-
-    return {
-      results: new Map(resultEntries) as TimestampedFetchResult<Q>,
-      triples: new Map(
-        resultEntries.map(([id, _]) => [id, view.triples.get(id)!])
-      ),
-    };
+    loadViewResultIntoExecutionCache(
+      resultEntries,
+      query,
+      view,
+      executionContext
+    );
+    return resultEntries.map(([key]) => key);
   }
 
   queryToViews<
     CN extends CollectionNameFromModels<Schema>,
-    Q extends CollectionQuery<Schema, CN>
+    Q extends CollectionQuery<Schema, CN>,
   >(query: Q) {
     const variableFilters: FilterStatement<Schema, CN>[] = [];
     const nonVariableFilters = query.where
@@ -228,7 +222,7 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
         {
           collectionName: query.collectionName,
           where: nonVariableFilters,
-          select: query.select,
+          // select: query.select,
           order: [
             ...variableFilters.map((f) => [f[0], 'ASC']),
             ...(query.order ?? []),
@@ -238,6 +232,39 @@ export class VariableAwareCache<Schema extends Models<any, any> | undefined> {
       variableFilters,
     };
   }
+}
+
+function loadViewResultIntoExecutionCache<M extends Models>(
+  resultEntries: [string, Entity][],
+  query: CollectionQuery<M>,
+  view: {
+    results: Map<string, any>;
+    triples: TripleRow[];
+  },
+  executionContext: FetchExecutionContext
+) {
+  resultEntries.forEach((entry) => {
+    const [entityId, entity] = entry;
+    if (!executionContext.executionCache.hasEntity(entityId)) {
+      executionContext.executionCache.setEntity(entityId, {
+        entity: entity,
+        tripleHistory: view.triples.filter((t) => t.id === entityId),
+      });
+    }
+
+    // Create query component if not loaded
+    const componentKey = QueryExecutionCache.ComponentId(
+      executionContext.componentPrefix,
+      entityId
+    );
+    if (!executionContext.executionCache.hasComponent(componentKey)) {
+      const component = {
+        entityId,
+        relationships: {},
+      };
+      executionContext.executionCache.setComponent(componentKey, component);
+    }
+  });
 }
 
 /**

@@ -29,14 +29,16 @@ import { injectQuery } from '@triplit/angular';
           />
           <button class="btn" type="submit">Add Todo</button>
         </form>
-        @if(queryResults.fetching()){
-        <p>Loading...</p>
+        @if (queryResults.fetching()) {
+          <p>Loading...</p>
         }
-        <div class="todos-container">
-          @for ( todo of todosArray(); track todo.id) {
-          <app-todo [todo]="todo" />
-          }
-        </div>
+        @if (queryResults.results()) {
+          <div class="todos-container">
+            @for (todo of queryResults.results(); track todo.id) {
+              <app-todo [todo]="todo" />
+            }
+          </div>
+        }
       </div>
     </div>
   `,
@@ -55,10 +57,4 @@ export class AppComponent {
     //@ts-ignore
     query: triplit.query('todos').order('created_at', 'DESC'),
   }));
-  todosArray = computed(() => {
-    const results = this.queryResults.results();
-    if (!results) return [];
-    results;
-    return Array.from(results.values());
-  });
 }

@@ -7,7 +7,7 @@ import {
 } from '@triplit/server';
 import jwt from 'jsonwebtoken';
 import path from 'path';
-import fs from 'fs';
+import fs, { existsSync } from 'fs';
 import { CWD, getDataDir, getTriplitDir } from '../filesystem.js';
 import { Command } from '../command.js';
 import * as Flag from '../flags.js';
@@ -17,6 +17,8 @@ import { TriplitClient } from '@triplit/client';
 import { insertSeeds } from './seed/run.js';
 import { projectSchemaMiddleware } from '../middleware/project-schema.js';
 import { schemaFileContentFromJSON, writeSchemaFile } from '../schema.js';
+import { validateWebhookStructure } from './webhooks/push.js';
+import { blue } from 'ansis/colors';
 
 export default Command({
   description: 'Starts the Triplit development environment',
@@ -49,6 +51,19 @@ export default Command({
       char: 'S',
       description: 'Seed the database with data',
     }),
+    enableWebhooks: Flag.Boolean({
+      description: 'Enable the sending of webhooks to the configured servers',
+      char: 'e',
+      default: false,
+    }),
+    upstreamUrl: Flag.String({
+      description: 'URL of the upstream server',
+      hidden: true,
+    }),
+    upstreamToken: Flag.String({
+      description: 'Token to be used with the upstream server',
+      hidden: true,
+    }),
   },
   async run({ flags, ctx }) {
     const dbPort = flags.dbPort || 6543;
@@ -60,7 +75,7 @@ export default Command({
       process.env.CLAIMS_PATH = process.env.TRIPLIT_CLAIMS_PATH;
     if (process.env.TRIPLIT_EXTERNAL_JWT_SECRET)
       process.env.EXTERNAL_JWT_SECRET = process.env.TRIPLIT_EXTERNAL_JWT_SECRET;
-
+    if (!flags.enableWebhooks) process.env.TRIPLIT_DISABLE_WEBHOOKS = 'true';
     // If we have durable storage, setup db path
     if (durableStoreKeys.includes(flags.storage as any)) {
       // Check dependenies as needed
@@ -107,6 +122,18 @@ export default Command({
       collections && flags.initWithSchema
         ? { collections, roles, version: 0 }
         : undefined;
+
+    let upstream = undefined;
+    if (!!flags.upstreamUrl) {
+      if (!flags.upstreamToken) {
+        throw new Error('Both upstreamUrl and upstreamToken must be provided');
+      }
+      upstream = {
+        url: flags.upstreamUrl,
+        token: flags.upstreamToken,
+      };
+    }
+
     const startDBServer = createDBServer({
       storage: flags.storage || 'memory',
       dbOptions: {
@@ -114,6 +141,7 @@ export default Command({
       },
       watchMode: !!flags.watch,
       verboseLogs: !!flags.verbose,
+      upstream,
     });
     let watcher: chokidar.FSWatcher | undefined = undefined;
     let remoteSchemaUnsubscribe = undefined;
@@ -132,7 +160,7 @@ export default Command({
         const schemaPath = path.join(getTriplitDir(), 'schema.ts');
         const schemaQuery = client
           .query('_metadata')
-          .entityId('_schema')
+          .id('_schema')
           // Avoid firing on optimistic changes
           .syncStatus('confirmed')
           .build();
@@ -151,7 +179,7 @@ export default Command({
           async (results, info) => {
             // Avoid firing on potentially stale results
             if (info.hasRemoteFulfilled) {
-              const schemaJSON = results.get('_schema');
+              const schemaJSON = results[0];
               const resultHash = hashSchemaJSON(schemaJSON.collections);
               const fileSchema = schemaToJSON({
                 collections: ctx.schema,
@@ -222,9 +250,40 @@ export default Command({
             projName: CWD.split('/').pop() + '-local',
           }).toString()}`);
 
-    if (flags.seed !== undefined)
+    if (flags.seed !== undefined) {
       await insertSeeds(dbUrl, serviceKey, flags.seed, false, ctx.schema);
+    }
 
+    const webhooksPath = path.resolve(
+      process.env.TRIPLIT_WEBHOOK_CONFIG_PATH ??
+        path.join(getTriplitDir(), 'webhooks.json')
+    );
+
+    if (existsSync(webhooksPath)) {
+      const validJSONWebhooks = validateWebhookStructure(
+        fs.readFileSync(webhooksPath, 'utf8')
+      );
+      if (validJSONWebhooks) {
+        await fetch(dbUrl + '/webhooks-push', {
+          method: 'POST',
+          body: JSON.stringify({
+            webhooks: validJSONWebhooks,
+          }),
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${serviceKey}`,
+          },
+        });
+        console.log(
+          'Webhooks config file found at',
+          blue('./' + path.relative(CWD, webhooksPath))
+        );
+        console.log('Webhooks will not be sent in development mode.');
+        console.log(
+          `You can override this with the ${blue('--enableWebhooks')} flag`
+        );
+      }
+    }
     return (
       <>
         <Newline />

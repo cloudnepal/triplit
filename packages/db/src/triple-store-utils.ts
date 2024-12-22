@@ -9,6 +9,7 @@ import { QueryValue, ValueCursor } from './query/types/collection-query.js';
 import { Timestamp } from './timestamp.js';
 import { TripleStoreTransaction } from './triple-store-transaction.js';
 import { KeyValuePair, MIN, MAX } from '@triplit/tuple-database';
+import { genToArr, mapGen } from './utils/generator.js';
 
 // Value should be serializable, this is what goes into triples
 // Not to be confused with the Value type we define on queries
@@ -145,25 +146,24 @@ export function indexToTriple(
       indexType === 'EAT'
         ? index.value[1]
         : indexType === 'AVE'
-        ? false
-        : index.value.expired,
+          ? false
+          : index.value.expired,
   };
 }
 
-export async function scanToTriples(
+export async function* scanToTriples(
   tx: MultiTupleStoreOrTransaction,
-  ...scanParams: Parameters<MultiTupleStoreOrTransaction['scan']>
+  scanParams: Parameters<MultiTupleStoreOrTransaction['scan']>[0]
 ) {
-  // @ts-ignore
-  return (await tx.scan(...scanParams)).map(indexToTriple);
+  yield* mapGen(tx.scan(scanParams), (index) => indexToTriple(index));
 }
 
-export async function findByCollection(
+export async function* findByCollection(
   tx: MultiTupleStoreOrTransaction,
   collectionName: string,
   direction?: 'ASC' | 'DESC'
 ) {
-  return scanToTriples(tx, {
+  yield* scanToTriples(tx, {
     prefix: ['EAT'],
     gte: [collectionName],
     // @ts-ignore
@@ -172,7 +172,7 @@ export async function findByCollection(
   });
 }
 
-export async function findByEAT(
+export async function* findByEAT(
   tx: MultiTupleStoreOrTransaction,
   [entityId, attribute]: [entityId?: EntityId, attribute?: Attribute] = [],
   direction?: 'ASC' | 'DESC'
@@ -180,23 +180,22 @@ export async function findByEAT(
   const scanArgs = {
     prefix: ['EAT'],
     gte: [entityId ?? MIN, attribute ?? MIN],
-    // @ts-ignore
     lt: [entityId ?? MAX, [...(attribute ?? []), MAX], MAX],
     reverse: direction === 'DESC',
   };
-  return scanToTriples(tx, scanArgs);
+  yield* scanToTriples(tx, scanArgs);
 }
 
-export function findByAVE(
+export async function* findByAVE(
   tx: MultiTupleStoreOrTransaction,
   [attribute, value, entityId]: [
     attribute?: Attribute,
     value?: TupleValue,
-    entityId?: EntityId
+    entityId?: EntityId,
   ] = [],
   direction?: 'ASC' | 'DESC'
 ) {
-  return scanToTriples(tx, {
+  yield* scanToTriples(tx, {
     prefix: ['AVE'],
     gte: [attribute ?? MIN, value ?? MIN, entityId ?? MIN],
     // @ts-ignore
@@ -205,7 +204,7 @@ export function findByAVE(
   });
 }
 
-export function findValuesInRange(
+export async function* findValuesInRange(
   tx: MultiTupleStoreOrTransaction,
   attribute: Attribute,
   constraints: RangeContraints = {}
@@ -217,23 +216,23 @@ export function findValuesInRange(
   const greaterThanCursor = !!constraints.greaterThanCursor
     ? constraints.greaterThanCursor
     : constraints.greaterThan
-    ? ([constraints.greaterThan, MAX] as const)
-    : undefined;
+      ? ([constraints.greaterThan, MAX] as const)
+      : undefined;
   const greaterThanOrEqualCursor = !!constraints.greaterThanOrEqualCursor
     ? constraints.greaterThanOrEqualCursor
     : constraints.greaterThanOrEqual
-    ? ([constraints.greaterThanOrEqual, MIN] as const)
-    : undefined;
+      ? ([constraints.greaterThanOrEqual, MIN] as const)
+      : undefined;
   const lessThanCursor = !!constraints.lessThanCursor
     ? constraints.lessThanCursor
     : constraints.lessThan
-    ? ([constraints.lessThan, MIN] as const)
-    : undefined;
+      ? ([constraints.lessThan, MIN] as const)
+      : undefined;
   const lessThanOrEqualCursor = !!constraints.lessThanOrEqualCursor
     ? constraints.lessThanOrEqualCursor
     : constraints.lessThanOrEqual
-    ? ([constraints.lessThanOrEqual, MAX] as const)
-    : undefined;
+      ? ([constraints.lessThanOrEqual, MAX] as const)
+      : undefined;
 
   const scanArgs = {
     prefix,
@@ -263,7 +262,7 @@ export function findValuesInRange(
     ],
     reverse: constraints.direction === 'DESC',
   };
-  return scanToTriples(tx, scanArgs);
+  yield* scanToTriples(tx, scanArgs);
 }
 
 // function findByVAE(
@@ -284,26 +283,26 @@ export function findValuesInRange(
 //   });
 // }
 
-export async function findByEntity(
+export async function* findByEntity(
   tx: MultiTupleStoreOrTransaction,
   id?: EntityId
-): Promise<TripleRow[]> {
-  return findByEAT(tx, [id]);
+) {
+  yield* findByEAT(tx, [id]);
 }
 
-export async function findByEntityAttribute(
+export async function* findByEntityAttribute(
   tx: MultiTupleStoreOrTransaction,
   id: EntityId,
   attribute: Attribute
-): Promise<TripleRow[]> {
-  return findByEAT(tx, [id, attribute]);
+) {
+  yield* findByEAT(tx, [id, attribute]);
 }
 
-export async function findByAttribute(
+export async function* findByAttribute(
   tx: MultiTupleStoreOrTransaction,
   attribute: Attribute
-): Promise<TripleRow[]> {
-  return findByAVE(tx, [attribute]);
+) {
+  yield* findByAVE(tx, [attribute]);
 }
 
 // async function findByValue(
@@ -319,14 +318,14 @@ export function mapStaticTupleToEAV(tuple: { key: any[]; value: any }): EAV {
 }
 
 // NOTE: SOME WEIRD STUFF GOING ON WITH TUPLE DATABASE AND gt/lte with array prefixes
-export async function findByClientTimestamp(
+export async function* findByClientTimestamp(
   tx: MultiTupleStoreOrTransaction,
   clientId: string,
   scanDirection: 'lt' | 'lte' | 'gt' | 'gte' | 'eq',
   timestamp: Timestamp | undefined
 ) {
   if (!timestamp && !scanDirection.startsWith('gt')) {
-    return [];
+    return;
   }
   let scanParams: Parameters<MultiTupleStoreOrTransaction['scan']>[0];
   switch (scanDirection) {
@@ -361,7 +360,7 @@ export async function findByClientTimestamp(
         `Cannot perform a scan with direction ${scanDirection}.`
       );
   }
-  return await scanToTriples(tx, {
+  yield* scanToTriples(tx, {
     prefix: ['clientTimestamp', clientId],
     ...scanParams,
   });
@@ -371,11 +370,13 @@ export async function findMaxClientTimestamp(
   tx: MultiTupleStoreOrTransaction,
   clientId: string
 ): Promise<Timestamp | undefined> {
-  const res = (await tx.scan({
-    prefix: ['clientTimestamp', clientId],
-    reverse: true,
-    limit: 1,
-  })) as ClientTimestampIndex[];
+  const res = (await genToArr(
+    tx.scan({
+      prefix: ['clientTimestamp', clientId],
+      reverse: true,
+      limit: 1,
+    })
+  )) as ClientTimestampIndex[];
   return res[0]?.key[2];
 }
 
@@ -385,11 +386,13 @@ export async function findAllClientIds(
   const clientIds: Set<string> = new Set();
   let lastClientId: string | typeof MIN = MIN;
   while (true) {
-    const res = await tx.scan({
-      prefix: ['clientTimestamp'],
-      gt: [lastClientId, MAX, MAX, MAX, MAX],
-      limit: 1,
-    });
+    const res = await genToArr(
+      tx.scan({
+        prefix: ['clientTimestamp'],
+        gt: [lastClientId, MAX, MAX, MAX, MAX],
+        limit: 1,
+      })
+    );
     if (res.length === 0) {
       break;
     }
@@ -405,13 +408,6 @@ export async function findAllClientIds(
     lastClientId = clientId;
   }
   return Array.from(clientIds);
-}
-
-// We use the _collection tuple to indicate if an entity delete should occur
-export function isTupleEntityDeleteMarker(tuple: TupleIndex) {
-  // @ts-ignore TODO: need to fix to support subspaces
-  const collectionMarker = tuple.key[3][0];
-  return collectionMarker === '_collection' && tuple.value.expired;
 }
 
 export function triplesToStateVector(triples: TripleRow[]): Timestamp[] {

@@ -185,13 +185,13 @@ export async function safeSchemaEdit(
   // Wait for transaction to commit remotely so we can start subscription on new collection
   // Otherwise we get errors that the collection doesn't exist
   // TODO: NEED better API for handling this kind of situation
-  const { txId, output, isCancelled } = transaction;
-  if (txId && !isCancelled) {
+  const { txId, output, isCanceled } = transaction;
+  if (txId && !isCanceled) {
     const promise = new Promise<void>((resolve, reject) => {
-      client.syncEngine.onTxCommit(txId, () => {
+      client.onTxCommitRemote(txId, () => {
         resolve();
       });
-      client.syncEngine.onTxFailure(txId, (e) => {
+      client.onTxFailureRemote(txId, (e) => {
         reject(e);
       });
     });

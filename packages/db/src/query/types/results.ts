@@ -1,72 +1,86 @@
-import { CollectionNameFromModels, ModelFromModels } from '../../db.js';
+import { CollectionNameFromModels } from '../../db.js';
 import {
-  CollectionQuery,
+  QueryInclusions,
   QueryResultCardinality,
-  QuerySelectionValue,
-  RelationSubquery,
+  QuerySelection,
+  SchemaQueries,
 } from './collection-query.js';
 import {
-  Model,
   Models,
   QuerySelectionFilteredTypeFromModel,
-} from '../../schema/types';
+} from '../../schema/types/index.js';
 
 /**
  * Transforms a complex nested type to a readable type
  */
-export type Unalias<T> = T extends Map<infer K, infer V>
-  ? Map<K, Unalias<V>>
-  : T extends Set<infer V>
-  ? Set<Unalias<V>>
-  : T extends Date
-  ? T
-  : T extends Object
-  ? { [K in keyof T]: Unalias<T[K]> }
-  : T;
+export type Unalias<T> =
+  T extends Map<infer K, infer V>
+    ? Map<K, Unalias<V>>
+    : T extends Set<infer V>
+      ? Set<Unalias<V>>
+      : T extends Date
+        ? T
+        : T extends Array<infer U>
+          ? Array<Unalias<U>>
+          : T extends Object
+            ? { [K in keyof T]: Unalias<T[K]> }
+            : T;
 
 /**
  * The expected result of a query given its cardinality
  */
 export type QueryResult<
-  Q extends CollectionQuery<any, any, any, any>,
-  C extends QueryResultCardinality
-> = C extends 'one' ? FetchResultEntity<Q> | null : FetchResult<Q>;
+  M extends Models,
+  Q extends SchemaQueries<M>,
+  C extends QueryResultCardinality,
+> = C extends 'one' ? FetchResultEntity<M, Q> | null : FetchResult<M, Q>;
 
 /**
- * A map containing the results of a database fetch
+ * An array containing the results of a database fetch
  */
-export type FetchResult<Q extends CollectionQuery<any, any, any, any>> = Map<
-  string,
-  FetchResultEntity<Q>
->;
+export type FetchResult<
+  M extends Models,
+  Q extends SchemaQueries<M>,
+> = FetchResultEntity<M, Q>[];
 
 /**
  * An entity fetched from the database, based on a CollectionQuery
  */
-export type FetchResultEntity<Q extends CollectionQuery<any, any, any, any>> =
-  Q extends CollectionQuery<infer M, infer CN, infer S, infer I>
-    ? FetchResultEntityFromParts<M, CN, S, I>
-    : any;
+// NOTE: Optimally we wouldnt need to provide Models and could get it from collection query, however that breaks our typechecking (not statically, only at runtime)
+// That may indicate a bug with our typechecking library, but for now we'll provide the schema as a parameter
+export type FetchResultEntity<
+  M extends Models,
+  Q extends SchemaQueries<M>,
+> = FetchResultEntityFromParts<
+  M,
+  Q['collectionName'],
+  NonNullable<Q['select']>[number],
+  NonNullable<Q['include']>
+>;
+
+// TODO: we can expose this to users, but it breaks our typechecking if used in internal typing
+// export type FetchResultEntity<Q extends CollectionQuery<any, any, any, any>> =
+// Q extends CollectionQuery<infer M, infer CN, infer S, infer I>
+//   ? FetchResultEntityFromParts<M, CN, S, I>
+//   : never;
 
 /**
  * Alias for FetchResultEntity
  */
-export type ReturnTypeFromQuery<Q extends CollectionQuery<any, any, any, any>> =
-  FetchResultEntity<Q>;
+export type ReturnTypeFromQuery<
+  M extends Models,
+  Q extends SchemaQueries<M>,
+> = FetchResultEntity<M, Q>;
 
 /**
  * An entity fetched form the database, based on the paramters of CollectionQuery
  */
 export type FetchResultEntityFromParts<
-  M extends Models<any, any> | undefined,
+  M extends Models,
   CN extends CollectionNameFromModels<M>,
-  Selection extends QuerySelectionValue<M, CN> = QuerySelectionValue<M, CN>,
-  Inclusion extends Record<string, RelationSubquery<M, any>> = {}
-> = M extends Models<any, any>
-  ? ModelFromModels<M, CN> extends Model<any>
-    ? QuerySelectionFilteredTypeFromModel<M, CN, Selection, Inclusion>
-    : any
-  : any;
+  Selection extends QuerySelection<M, CN> = QuerySelection<M, CN>,
+  Inclusion extends QueryInclusions<M, CN> = {},
+> = QuerySelectionFilteredTypeFromModel<M, CN, Selection, Inclusion>;
 
 /**
  * The result of a transaction
@@ -76,5 +90,5 @@ export type FetchResultEntityFromParts<
 export type TransactionResult<Output> = {
   txId: string | undefined;
   output: Output | undefined;
-  isCancelled: boolean;
+  isCanceled: boolean;
 };

@@ -1,14 +1,19 @@
-import { ClientSyncMessage, CloseReason } from '@triplit/types/sync';
+import { ClientSyncMessage, CloseReason } from '../@triplit/types/sync.js';
 import {
   ConnectionStatus,
   SyncTransport,
   TransportConnectParams,
 } from './transport.js';
+import { WebSocketsUnavailableError } from '../errors.js';
 
 const DEFAULT_PAYLOAD_SIZE_LIMIT = (1024 * 1024) / 2;
 
 interface WebSocketTransportOptions {
   messagePayloadSizeLimit?: number;
+}
+
+function webSocketsAreAvailable(): boolean {
+  return typeof WebSocket !== 'undefined';
 }
 
 export class WebSocketTransport implements SyncTransport {
@@ -31,12 +36,12 @@ export class WebSocketTransport implements SyncTransport {
   onOpen(callback: (ev: any) => void): void {
     if (this.ws) this.ws.onopen = callback;
   }
-  sendMessage(message: ClientSyncMessage): void {
+  sendMessage(message: ClientSyncMessage): boolean {
     // For now, skip sending messages if we're not connected. I dont think we need a queue yet.
-    if (!this.ws) return;
+    if (!this.ws) return false;
     if (!this.isOpen) {
       // console.log('skipping', type, payload);
-      return;
+      return false;
     }
 
     // Perform chunking if the message is too large
@@ -64,9 +69,10 @@ export class WebSocketTransport implements SyncTransport {
           })
         );
       }
-      return;
+      return true;
     }
     this.ws.send(JSON.stringify(message));
+    return true;
   }
   connect(params: TransportConnectParams): void {
     if (this.ws && this.isOpen) this.close();
@@ -93,6 +99,9 @@ export class WebSocketTransport implements SyncTransport {
     const wsUri = `${
       secure ? 'wss' : 'ws'
     }://${server}?${wsOptions.toString()}`;
+    if (!webSocketsAreAvailable()) {
+      throw new WebSocketsUnavailableError();
+    }
     this.ws = new WebSocket(wsUri);
     this.ws.onconnectionchange = (status) => {
       this.connectionListeners.forEach((listener) => listener(status));

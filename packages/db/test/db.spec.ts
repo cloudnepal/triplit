@@ -2,30 +2,27 @@ import { InMemoryTupleStorage } from '@triplit/tuple-database';
 import { describe, expect, it, beforeEach, beforeAll, vi } from 'vitest';
 import {
   and,
-  Migration,
   DB,
   or,
   Schema as S,
   CollectionQueryBuilder,
-  queryResultToJson,
   WriteRuleError,
   InvalidFilterError,
-  DBTransaction,
   schemaToJSON,
   DBSerializationError,
   InvalidInternalEntityIdError,
   InvalidEntityIdError,
   EntityNotFoundError,
-  InvalidMigrationOperationError,
   InvalidOperationError,
   InvalidCollectionNameError,
   InvalidInsertDocumentError,
   CollectionNotFoundError,
   InvalidSchemaPathError,
-  SessionVariableNotFoundError,
   InvalidOrderClauseError,
   InvalidWhereClauseError,
-  CollectionQuery,
+  genToArr,
+  DurableClock,
+  SessionVariableNotFoundError,
 } from '../src';
 import { hashSchemaJSON } from '../src/schema/schema.js';
 import { Models } from '../src/schema/types';
@@ -42,34 +39,14 @@ import {
   fetchDeltaTriples,
   initialFetchExecutionContext,
 } from '../src/collection-query.js';
-import { CollectionQueryInclusion } from '../src/query/builder.js';
 import { prepareQuery } from '../src/query/prepare.js';
-
-const pause = async (ms: number = 100) =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
-// const storage = new InMemoryTupleStorage();
-const storage = new MemoryStorage();
-
-export async function testDBAndTransaction<
-  M extends Models<any, any> | undefined
->(
-  // should return a new instance if you are performing writes in your test
-  dbFactory: () => DB<M> | Promise<DB<M>>,
-  test: (db: DB<M> | DBTransaction<M>) => void | Promise<void>,
-  scope: { db: boolean; tx: boolean } = { db: true, tx: true }
-) {
-  if (scope.db) await test(await dbFactory());
-  if (scope.tx)
-    await (
-      await dbFactory()
-    ).transact(async (tx) => {
-      await test(tx);
-    });
-}
+import { DEFAULT_PAGE_SIZE as TUPLE_DB_DEFAULT_PAGE_SIZE } from '../src/multi-tuple-store.js';
+import { testDBAndTransaction } from './utils/db-helpers.js';
+import { isCollectionAttribute } from '../src/entity.js';
+import { pause } from './utils/async.js';
 
 describe('Database API', () => {
-  let db: DB<any>;
+  let db: DB;
   beforeEach(async () => {
     db = new DB({});
     for (const student of students) {
@@ -133,55 +110,80 @@ describe('Database API', () => {
     expect(notAStudent).toBeNull();
   });
 
-  it('supports basic queries with filters', async () => {
-    const eq = await db.fetch(
-      CollectionQueryBuilder('Class')
-        .where([['level', '=', 100]])
-        .build()
-    );
-    expect(eq.size).toBe(classes.filter((cls) => cls.level === 100).length);
-    const neq = await db.fetch(
-      CollectionQueryBuilder('Class')
-        .where([['level', '!=', 100]])
-        .build()
-    );
-    expect(neq.size).toBe(classes.filter((cls) => cls.level !== 100).length);
-    const gt = await db.fetch(
-      CollectionQueryBuilder('Class')
-        .where([['level', '>', 100]])
-        .build()
-    );
-    expect(gt.size).toBe(classes.filter((cls) => cls.level > 100).length);
-    const gte = await db.fetch(
-      CollectionQueryBuilder('Class')
-        .where([['level', '>=', 100]])
-        .build()
-    );
-    expect(gte.size).toBe(classes.filter((cls) => cls.level >= 100).length);
-    const lt = await db.fetch(
-      CollectionQueryBuilder('Class')
-        .where([['level', '<', 200]])
-        .build()
-    );
-    expect(lt.size).toBe(classes.filter((cls) => cls.level < 200).length);
-    const lte = await db.fetch(
-      CollectionQueryBuilder('Class')
-        .where([['level', '<=', 200]])
-        .build()
-    );
-    expect(lte.size).toBe(classes.filter((cls) => cls.level <= 200).length);
-    const _in = await db.fetch(
-      CollectionQueryBuilder('Class')
-        .where([['level', 'in', [100, 200]]])
-        .build()
-    );
-    expect(_in.size).toBe(4);
-    const nin = await db.fetch(
-      CollectionQueryBuilder('Class')
-        .where([['level', 'nin', [100, 200]]])
-        .build()
-    );
-    expect(nin.size).toBe(1);
+  describe('Supports basic queries with filters', () => {
+    it('supports equality operator', async () => {
+      const eq = await db.fetch(
+        CollectionQueryBuilder('Class')
+          .where([['level', '=', 100]])
+          .build()
+      );
+      expect(eq.length).toBe(classes.filter((cls) => cls.level === 100).length);
+    });
+
+    it('supports inequality operator', async () => {
+      const neq = await db.fetch(
+        CollectionQueryBuilder('Class')
+          .where([['level', '!=', 100]])
+          .build()
+      );
+      expect(neq.length).toBe(
+        classes.filter((cls) => cls.level !== 100).length
+      );
+    });
+
+    it('supports greater than operator', async () => {
+      const gt = await db.fetch(
+        CollectionQueryBuilder('Class')
+          .where([['level', '>', 100]])
+          .build()
+      );
+      expect(gt.length).toBe(classes.filter((cls) => cls.level > 100).length);
+    });
+
+    it('supports greater than or equal operator', async () => {
+      const gte = await db.fetch(
+        CollectionQueryBuilder('Class')
+          .where([['level', '>=', 100]])
+          .build()
+      );
+      expect(gte.length).toBe(classes.filter((cls) => cls.level >= 100).length);
+    });
+
+    it('supports less than operator', async () => {
+      const lt = await db.fetch(
+        CollectionQueryBuilder('Class')
+          .where([['level', '<', 200]])
+          .build()
+      );
+      expect(lt.length).toBe(classes.filter((cls) => cls.level < 200).length);
+    });
+
+    it('supports less than or equal operator', async () => {
+      const lte = await db.fetch(
+        CollectionQueryBuilder('Class')
+          .where([['level', '<=', 200]])
+          .build()
+      );
+      expect(lte.length).toBe(classes.filter((cls) => cls.level <= 200).length);
+    });
+
+    it('supports "in" operator', async () => {
+      const _in = await db.fetch(
+        CollectionQueryBuilder('Class')
+          .where([['level', 'in', [100, 200]]])
+          .build()
+      );
+      expect(_in.length).toBe(4);
+    });
+
+    it('supports "nin" operator', async () => {
+      const nin = await db.fetch(
+        CollectionQueryBuilder('Class')
+          .where([['level', 'nin', [100, 200]]])
+          .build()
+      );
+      expect(nin.length).toBe(1);
+    });
   });
   it('treats "in" operations on sets as a defacto "intersects"', async () => {
     const newDb = new DB({
@@ -199,26 +201,26 @@ describe('Database API', () => {
         .where([['set', 'in', ['a', 'd']]])
         .build()
     );
-    expect(results.size).toBe(3);
+    expect(results.length).toBe(3);
     results = await newDb.fetch(
       CollectionQueryBuilder('test')
         .where([['set', 'in', ['d']]])
         .build()
     );
-    expect(results.size).toBe(1);
+    expect(results.length).toBe(1);
     results = await newDb.fetch(
       CollectionQueryBuilder('test')
         .where([['set', 'in', ['a', 'b']]])
         .build()
     );
-    expect(results.size).toBe(2);
+    expect(results.length).toBe(2);
   });
 
   it('supports basic queries with the "like" operator', async () => {
     const studentsNamedJohn = await db.fetch(
       CollectionQueryBuilder('Student').where(['name', 'like', 'John%']).build()
     );
-    expect(studentsNamedJohn.size).toBe(
+    expect(studentsNamedJohn.length).toBe(
       students.filter((s) => s.name.startsWith('John')).length
     );
 
@@ -227,7 +229,7 @@ describe('Database API', () => {
         .where([['name', 'like', '%ie%']])
         .build()
     );
-    expect(studentswithIeIntheirName.size).toBe(
+    expect(studentswithIeIntheirName.length).toBe(
       students.filter((s) => s.name.includes('ie')).length
     );
 
@@ -236,7 +238,7 @@ describe('Database API', () => {
         .where([['name', 'like', 'Calculus _']])
         .build()
     );
-    expect(calculusClasses.size).toBe(
+    expect(calculusClasses.length).toBe(
       classes.filter((c) => new RegExp('Calculus *').test(c.name)).length
     );
 
@@ -245,7 +247,7 @@ describe('Database API', () => {
         .where([['name', 'like', 'Calculus*+']])
         .build()
     );
-    expect(escapeOutRegex.size).not.toBe(
+    expect(escapeOutRegex.length).not.toBe(
       classes.filter((c) => new RegExp('Calculus *').test(c.name)).length
     );
     const departmentsWithSinTheMiddleOfTheirName = await db.fetch(
@@ -253,33 +255,33 @@ describe('Database API', () => {
         .where([['name', 'like', '%_s_%']])
         .build()
     );
-    expect(departmentsWithSinTheMiddleOfTheirName.size).toBe(2);
+    expect(departmentsWithSinTheMiddleOfTheirName.length).toBe(2);
     const artistsWithDashInTheirName = await db.fetch(
       CollectionQueryBuilder('Rapper')
         .where([['name', 'like', '%-%']])
         .build()
     );
-    expect(artistsWithDashInTheirName.size).toBe(2);
+    expect(artistsWithDashInTheirName.length).toBe(2);
     const artistsWithDollaSignInTheirName = await db.fetch(
       CollectionQueryBuilder('Rapper')
         .where([['name', 'like', '%$%']])
         .build()
     );
-    expect(artistsWithDollaSignInTheirName.size).toBe(1);
+    expect(artistsWithDollaSignInTheirName.length).toBe(1);
 
     const artistsWithQuotesInTheirName = await db.fetch(
       CollectionQueryBuilder('Rapper')
         .where([['name', 'like', "%'%'%"]])
         .build()
     );
-    expect(artistsWithQuotesInTheirName.size).toBe(2);
+    expect(artistsWithQuotesInTheirName.length).toBe(2);
 
     const Biggie = await db.fetch(
       CollectionQueryBuilder('Rapper')
         .where([['name', 'like', '%B.I.G%.']])
         .build()
     );
-    expect(Biggie.size).toBe(1);
+    expect(Biggie.length).toBe(1);
   });
 
   it('support basic queries with the "nlike" operator', async () => {
@@ -288,13 +290,13 @@ describe('Database API', () => {
         .where([['name', 'nlike', '%B.I.G%.']])
         .build()
     );
-    expect(Biggie.size).toBe(RAPPERS_AND_PRODUCERS.length - 1);
+    expect(Biggie.length).toBe(RAPPERS_AND_PRODUCERS.length - 1);
     const artistsWithoutQuotesInTheirName = await db.fetch(
       CollectionQueryBuilder('Rapper')
         .where([['name', 'nlike', "%'%'%"]])
         .build()
     );
-    expect(artistsWithoutQuotesInTheirName.size).toBe(
+    expect(artistsWithoutQuotesInTheirName.length).toBe(
       RAPPERS_AND_PRODUCERS.length - 2
     );
   });
@@ -337,19 +339,19 @@ describe('Database API', () => {
         .where([['enrolled_students', 'has', 'student-1']])
         .build()
     );
-    expect([...results.keys()]).toStrictEqual(['class-2', 'class-3']);
+    expect(results.map((e) => e.id)).toStrictEqual(['class-2', 'class-3']);
     const results2 = await db.fetch(
       CollectionQueryBuilder('Classes')
         .where([['enrolled_students', 'has', 'bad-id']])
         .build()
     );
-    expect(results2.size).toBe(0);
+    expect(results2.length).toBe(0);
     const results3 = await db.fetch(
       CollectionQueryBuilder('Classes')
         .where([['enrolled_students', '!has', 'student-1']])
         .build()
     );
-    expect([...results3.keys()]).toStrictEqual([
+    expect(results3.map((e) => e.id)).toStrictEqual([
       'class-1',
       'class-4',
       'class-5',
@@ -359,12 +361,12 @@ describe('Database API', () => {
         .where([['enrolled_students', '!has', 'bad-id']])
         .build()
     );
-    expect(results4.size).toBe(5);
+    expect(results4.length).toBe(5);
   });
 
   it('supports basic queries without filters', async () => {
     const results = await db.fetch(CollectionQueryBuilder('Student').build());
-    expect(results.size).toBe(students.length);
+    expect(results.length).toBe(students.length);
   });
 
   it('throws an error when filtering with an unimplmented operator', async () => {
@@ -391,7 +393,7 @@ describe('Database API', () => {
     const ranks = [...results.values()].map((r) => r.rank);
     expect(Math.max(...ranks)).toBe(4);
     expect(Math.min(...ranks)).toBe(2);
-    expect(results.size).toBe(3);
+    expect(results.length).toBe(3);
   });
 
   it('supports filtering on one attribute with multiple operators (additive)', async () => {
@@ -405,7 +407,7 @@ describe('Database API', () => {
     const ranks = [...results.values()].map((r) => r.rank);
     expect(Math.max(...ranks)).toBe(4);
     expect(Math.min(...ranks)).toBe(2);
-    expect(results.size).toBe(3);
+    expect(results.length).toBe(3);
   });
 
   it('where clause by non leaf will throw error', async () => {
@@ -483,13 +485,6 @@ describe('Database API', () => {
     expect(stats.get('Student')).toBe(students.length);
     expect(stats.get('Class')).toBe(classes.length);
     expect(stats.get('Department')).toBe(departments.length);
-  });
-  it('can convert query results to JSON', async () => {
-    const results = await db.fetch(
-      CollectionQueryBuilder('Class').select(['name', 'level']).build()
-    );
-    const json = queryResultToJson(results);
-    expect(json).toBeTypeOf('object');
   });
 
   it('transactions return the txId and result of the callback', async () => {
@@ -749,7 +744,7 @@ describe('Register operations', () => {
 
     const preUpdateLookup = await db.fetch(preUpdateQuery);
     expect(preUpdateLookup).toHaveLength(1);
-    expect(preUpdateLookup.get('1')).toBeTruthy();
+    expect(preUpdateLookup[0]).toBeTruthy();
 
     const NEW_NAME = 'Dr. Zoidberg';
 
@@ -767,8 +762,8 @@ describe('Register operations', () => {
     const newQueryResult = await db.fetch(postUpdateQuery);
     expect(oldQueryResult).toHaveLength(0);
     expect(newQueryResult).toHaveLength(1);
-    expect(newQueryResult.get('1')).toBeTruthy();
-    expect(newQueryResult.get('1').name).toBe(NEW_NAME);
+    expect(newQueryResult[0]).toBeTruthy();
+    expect(newQueryResult[0].name).toBe(NEW_NAME);
   });
 });
 
@@ -872,13 +867,14 @@ describe('delete api', () => {
     await db.insert('posts', { id: 'post-1', author_id: 'user-1' });
     await db.transact(async (tx) => {
       await tx.delete('posts', 'post-1');
-      expect(
+      await expect(
         tx.update('posts', 'post-1', (entity) => {
           entity.author_id = 'user-2';
         })
       ).rejects.toThrowError(EntityNotFoundError);
     });
   });
+  // Feels like a schemaless limitation that we should allow
   it('prevents deletes triples from returning when same Entity ID is reused after deleting', async () => {
     const db = new DB();
     // insert a post, delete it, and then insert a new post with the same id but different attribute
@@ -933,92 +929,29 @@ it('safely handles multiple subscriptions', async () => {
   await db.insert('bands', { name: 'The Who', genre: 'Rock', founded: 1964 });
 });
 
-const TEST_SCORES = [
-  {
-    score: 80,
-    date: '2023-04-16',
-  },
-  {
-    score: 76,
-    date: '2023-03-06',
-  },
-  {
-    score: 95,
-    date: '2023-04-20',
-  },
-  {
-    score: 87,
-    date: '2023-04-21',
-  },
-  {
-    score: 75,
-    date: '2023-04-09',
-  },
-  {
-    score: 70,
-    date: '2023-05-28',
-  },
-  {
-    score: 80,
-    date: '2023-03-16',
-  },
-  {
-    score: 78,
-    date: '2023-05-01',
-  },
-  {
-    score: 70,
-    date: '2023-04-23',
-  },
-  {
-    score: 76,
-    date: '2023-04-06',
-  },
-  {
-    score: 99,
-    date: '2023-03-24',
-  },
-  {
-    score: 73,
-    date: '2023-03-13',
-  },
-  {
-    score: 87,
-    date: '2023-04-12',
-  },
-  {
-    score: 99,
-    date: '2023-03-17',
-  },
-  {
-    score: 87,
-    date: '2023-04-24',
-  },
-  {
-    score: 96,
-    date: '2023-03-26',
-  },
-  {
-    score: 91,
-    date: '2023-05-07',
-  },
-  {
-    score: 75,
-    date: '2023-04-17',
-  },
-  {
-    score: 98,
-    date: '2023-05-28',
-  },
-  {
-    score: 96,
-    date: '2023-05-24',
-  },
-];
+function generateTestScores(numScores: number) {
+  const scores = [];
+  for (let i = 0; i < numScores; i++) {
+    const score = Math.floor(Math.random() * 100) + 1;
+    const date = generateRandomDate();
+    scores.push({ score, date });
+  }
+  return scores;
+}
+
+function generateRandomDate(): string {
+  const start = new Date(2022, 0, 1);
+  const end = new Date();
+  const randomDate = new Date(
+    start.getTime() + Math.random() * (end.getTime() - start.getTime())
+  );
+  return randomDate.toISOString().split('T')[0];
+}
+
+let TEST_SCORES = generateTestScores(TUPLE_DB_DEFAULT_PAGE_SIZE * 4);
 
 describe('ORDER & LIMIT & Pagination', () => {
   const db = new DB({
-    source: storage,
     schema: {
       collections: {
         TestScores: {
@@ -1032,7 +965,7 @@ describe('ORDER & LIMIT & Pagination', () => {
     },
   });
   beforeEach(async () => {
-    storage.wipe();
+    await db.clear();
     for (const result of TEST_SCORES) {
       await db.insert('TestScores', result);
     }
@@ -1040,9 +973,9 @@ describe('ORDER & LIMIT & Pagination', () => {
 
   it('order by DESC', async () => {
     const descendingScoresResults = await db.fetch(
-      CollectionQueryBuilder('TestScores').order(['score', 'DESC']).build()
+      db.query('TestScores').order('score', 'DESC').build()
     );
-    expect(descendingScoresResults.size).toBe(TEST_SCORES.length);
+    expect(descendingScoresResults.length).toBe(TEST_SCORES.length);
     const areAllScoresDescending = Array.from(
       descendingScoresResults.values()
     ).every((result, i, arr) => {
@@ -1058,7 +991,7 @@ describe('ORDER & LIMIT & Pagination', () => {
     const descendingScoresResults = await db.fetch(
       CollectionQueryBuilder('TestScores').order(['score', 'ASC']).build()
     );
-    expect(descendingScoresResults.size).toBe(TEST_SCORES.length);
+    expect(descendingScoresResults.length).toBe(TEST_SCORES.length);
     const areAllScoresDescending = Array.from(
       descendingScoresResults.values()
     ).every((result, i, arr) => {
@@ -1131,8 +1064,8 @@ describe('ORDER & LIMIT & Pagination', () => {
       const resultsDESC = await db.fetch(
         db.query('test').order(['deep.deeper.deepest.prop', 'DESC']).build()
       );
-      expect([...resultsASC.keys()]).toEqual(['2', '1', '3']);
-      expect([...resultsDESC.keys()]).toEqual(['3', '1', '2']);
+      expect(resultsASC.map((e) => e.id)).toEqual(['2', '1', '3']);
+      expect(resultsDESC.map((e) => e.id)).toEqual(['3', '1', '2']);
     }
     {
       const resultsASC = await db.fetch(
@@ -1141,15 +1074,15 @@ describe('ORDER & LIMIT & Pagination', () => {
       const resultsDESC = await db.fetch(
         db.query('test').order(['deep.prop', 'DESC']).build()
       );
-      expect([...resultsASC.keys()]).toEqual(['1', '2', '3']);
-      expect([...resultsDESC.keys()]).toEqual(['3', '2', '1']);
+      expect(resultsASC.map((e) => e.id)).toEqual(['1', '2', '3']);
+      expect(resultsDESC.map((e) => e.id)).toEqual(['3', '2', '1']);
     }
   });
   it('order by multiple properties', async () => {
     const descendingScoresResults = await db.fetch(
       db.query('TestScores').order(['score', 'ASC'], ['date', 'DESC']).build()
     );
-    expect(descendingScoresResults.size).toBe(TEST_SCORES.length);
+    expect(descendingScoresResults.length).toBe(TEST_SCORES.length);
     const areAllScoresDescending = Array.from(
       descendingScoresResults.values()
     ).every((result, i, arr) => {
@@ -1173,7 +1106,7 @@ describe('ORDER & LIMIT & Pagination', () => {
         .order('date', 'DESC')
         .build()
     );
-    expect(descendingScoresResults.size).toBe(TEST_SCORES.length);
+    expect(descendingScoresResults.length).toBe(TEST_SCORES.length);
     const areAllScoresDescending = Array.from(
       descendingScoresResults.values()
     ).every((result, i, arr) => {
@@ -1190,9 +1123,9 @@ describe('ORDER & LIMIT & Pagination', () => {
 
   it('properly orders after update', async () => {
     const initialOrdered = await db.fetch(
-      CollectionQueryBuilder('TestScores').order(['score', 'ASC']).build()
+      db.query('TestScores').order('score', 'ASC').build()
     );
-    expect(initialOrdered.size).toBe(TEST_SCORES.length);
+    expect(initialOrdered.length).toBe(TEST_SCORES.length);
     const areAllScoresDescending = Array.from(initialOrdered.values()).every(
       (result, i, arr) => {
         if (i === 0) return true;
@@ -1204,19 +1137,15 @@ describe('ORDER & LIMIT & Pagination', () => {
     expect(areAllScoresDescending).toBeTruthy();
 
     // Move first item to the end
-    await db.update(
-      'TestScores',
-      [...initialOrdered.keys()][0],
-      async (entity) => {
-        entity.score = [...initialOrdered.values()][0].score + 1;
-      }
-    );
+    await db.update('TestScores', initialOrdered[0].id, async (entity) => {
+      entity.score = [...initialOrdered.values()][0].score + 1;
+    });
 
     after: {
       const ascendingResults = await db.fetch(
         CollectionQueryBuilder('TestScores').order(['score', 'ASC']).build()
       );
-      expect(ascendingResults.size).toBe(TEST_SCORES.length);
+      expect(ascendingResults.length).toBe(TEST_SCORES.length);
       const areAllScoresDescending = Array.from(
         ascendingResults.values()
       ).every((result, i, arr) => {
@@ -1271,12 +1200,9 @@ describe('ORDER & LIMIT & Pagination', () => {
 
   it('limit', async () => {
     const descendingScoresResults = await db.fetch(
-      CollectionQueryBuilder('TestScores')
-        .order(['score', 'DESC'])
-        .limit(5)
-        .build()
+      db.query('TestScores').order('score', 'DESC').limit(5).build()
     );
-    expect(descendingScoresResults.size).toBe(5);
+    expect(descendingScoresResults.length).toBe(5);
     const areAllScoresDescending = Array.from(
       descendingScoresResults.values()
     ).every((result, i, arr) => {
@@ -1289,54 +1215,58 @@ describe('ORDER & LIMIT & Pagination', () => {
   });
 
   it('can paginate DESC', async () => {
+    const PAGE_SIZE = Math.round(TUPLE_DB_DEFAULT_PAGE_SIZE * 1.5);
     const firstPageResults = await db.fetch(
-      CollectionQueryBuilder('TestScores')
-        .order(['score', 'DESC'])
-        .limit(5)
-        .build()
+      db.query('TestScores').order('score', 'DESC').limit(PAGE_SIZE).build()
     );
-    expect([...firstPageResults.values()].map((r) => r.score)).toEqual([
-      99, 99, 98, 96, 96,
-    ]);
+    const sortedScoresDesc = TEST_SCORES.map((r) => r.score).sort(
+      (a, b) => b - a
+    );
+    expect([...firstPageResults.values()].map((r) => r.score)).toEqual(
+      sortedScoresDesc.slice(0, PAGE_SIZE)
+    );
 
-    const lastDoc = [...firstPageResults.entries()][4];
+    const lastDoc = firstPageResults.at(-1);
 
     const secondPageResults = await db.fetch(
-      CollectionQueryBuilder('TestScores')
-        .order(['score', 'DESC'])
-        .limit(5)
-        .after([lastDoc[1].score, lastDoc[0]])
+      db
+        .query('TestScores')
+        .order('score', 'DESC')
+        .limit(PAGE_SIZE)
+        .after([lastDoc.score, lastDoc?.id])
         .build()
     );
 
-    expect([...secondPageResults.values()].map((r) => r.score)).toEqual([
-      95, 91, 87, 87, 87,
-    ]);
+    expect([...secondPageResults.values()].map((r) => r.score)).toEqual(
+      sortedScoresDesc.slice(PAGE_SIZE, PAGE_SIZE * 2)
+    );
   });
 
   it('can paginate ASC', async () => {
+    const PAGE_SIZE = Math.round(TUPLE_DB_DEFAULT_PAGE_SIZE * 1.5);
     const firstPageResults = await db.fetch(
-      CollectionQueryBuilder('TestScores')
-        .order(['score', 'ASC'])
-        .limit(5)
-        .build()
+      db.query('TestScores').order('score', 'ASC').limit(PAGE_SIZE).build()
     );
-    expect([...firstPageResults.values()].map((r) => r.score)).toEqual([
-      70, 70, 73, 75, 75,
-    ]);
+    const sortedScoresAsc = TEST_SCORES.map((r) => r.score).sort(
+      (a, b) => a - b
+    );
+    expect([...firstPageResults.values()].map((r) => r.score)).toEqual(
+      sortedScoresAsc.slice(0, PAGE_SIZE)
+    );
 
-    const lastDoc = [...firstPageResults.entries()][4];
+    const lastDoc = firstPageResults.at(-1);
 
     const secondPageResults = await db.fetch(
-      CollectionQueryBuilder('TestScores')
-        .order(['score', 'ASC'])
-        .limit(5)
-        .after([lastDoc[1].score, lastDoc[0]])
+      db
+        .query('TestScores')
+        .order('score', 'ASC')
+        .limit(PAGE_SIZE)
+        .after([lastDoc.score, lastDoc?.id])
         .build()
     );
-    expect([...secondPageResults.values()].map((r) => r.score)).toEqual([
-      76, 76, 78, 80, 80,
-    ]);
+    expect([...secondPageResults.values()].map((r) => r.score)).toEqual(
+      sortedScoresAsc.slice(PAGE_SIZE, PAGE_SIZE * 2)
+    );
   });
   it('can pull in more results to satisfy limit in subscription when current result no longer satisfies FILTER', async () => {
     const LIMIT = 5;
@@ -1357,7 +1287,7 @@ describe('ORDER & LIMIT & Pagination', () => {
         },
         {
           action: async (results) => {
-            const idFromResults = [...results.keys()][0];
+            const idFromResults = results[0].id;
             await db.transact(async (tx) => {
               await tx.update('TestScores', idFromResults, async (entity) => {
                 entity.score = 0;
@@ -1365,7 +1295,7 @@ describe('ORDER & LIMIT & Pagination', () => {
             });
           },
           check: (results) => {
-            expect(results.size).toBe(LIMIT);
+            expect(results.length).toBe(LIMIT);
             expect(
               [...results.values()].map((result) => result.score).includes(0)
             ).toBeFalsy();
@@ -1373,10 +1303,10 @@ describe('ORDER & LIMIT & Pagination', () => {
         },
         {
           action: async (results) => {
-            const firstResult = [...results][0];
+            const firstResult = results[0];
             await db.transact(async (tx) => {
-              await tx.update('TestScores', firstResult[0], async (entity) => {
-                entity.score = firstResult[1].score + 1;
+              await tx.update('TestScores', firstResult.id, async (entity) => {
+                entity.score = firstResult.score + 1;
               });
             });
           },
@@ -1413,12 +1343,12 @@ describe('ORDER & LIMIT & Pagination', () => {
       [
         {
           check: (results) => {
-            expect(results.size).toBe(LIMIT);
+            expect(results.length).toBe(LIMIT);
           },
         },
         {
           action: async (results) => {
-            const idFromResults = [...results.keys()][0];
+            const idFromResults = results[0].id;
             await db.transact(async (tx) => {
               await tx.update('TestScores', idFromResults, async (entity) => {
                 entity.score = 0;
@@ -1426,7 +1356,7 @@ describe('ORDER & LIMIT & Pagination', () => {
             });
           },
           check: (results) => {
-            expect(results.size).toBe(LIMIT);
+            expect(results.length).toBe(LIMIT);
             expect(
               [...results.values()].map((result) => result.score).includes(0)
             ).toBeFalsy();
@@ -1448,8 +1378,8 @@ describe('ORDER & LIMIT & Pagination', () => {
 
     const query = db.query('test').order(['name', 'ASC']).limit(3).build();
     const result = await db.fetch(query);
-    expect(result.size).toBe(3);
-    expect([...result.keys()]).toEqual(['1', '2', '4']);
+    expect(result.length).toBe(3);
+    expect(result.map((e) => e.id)).toEqual(['1', '2', '4']);
   });
 
   it('can handle secondary sorts on values with runs of equal primary values', async () => {
@@ -1591,14 +1521,14 @@ describe('database transactions', () => {
         date: '2023-04-16',
       });
       expect(
-        (await db.fetch(CollectionQueryBuilder('TestScores').build())).size
+        (await db.fetch(CollectionQueryBuilder('TestScores').build())).length
       ).toBe(0);
       expect(
-        (await tx.fetch(CollectionQueryBuilder('TestScores').build())).size
+        (await tx.fetch(CollectionQueryBuilder('TestScores').build())).length
       ).toBe(1);
     });
     expect(
-      (await db.fetch(CollectionQueryBuilder('TestScores').build())).size
+      (await db.fetch(CollectionQueryBuilder('TestScores').build())).length
     ).toBe(1);
     // expect(() => tx.collection('TestScores').query().fetch()).toThrowError();
   });
@@ -1623,15 +1553,15 @@ describe('database transactions', () => {
         date: '2023-04-16',
       });
       expect(
-        (await db.fetch(CollectionQueryBuilder('TestScores').build())).size
+        (await db.fetch(CollectionQueryBuilder('TestScores').build())).length
       ).toBe(0);
       expect(
-        (await tx.fetch(CollectionQueryBuilder('TestScores').build())).size
+        (await tx.fetch(CollectionQueryBuilder('TestScores').build())).length
       ).toBe(1);
       await tx.cancel();
     });
     expect(
-      (await db.fetch(CollectionQueryBuilder('TestScores').build())).size
+      (await db.fetch(CollectionQueryBuilder('TestScores').build())).length
     ).toBe(0);
     // expect(() => tx.collection('TestScores').query().fetch()).toThrowError();
   });
@@ -1665,14 +1595,6 @@ describe('database transactions', () => {
       await tx.cancel();
     });
     expect((await db.fetchById('TestScores', DOC_ID))?.score).toBe(80);
-  });
-  it("can't commit inside the transaction callback", async () => {
-    const db = new DB({});
-    expect(
-      db.transact(async (tx) => {
-        tx.commit();
-      })
-    ).rejects.toThrowError();
   });
   it('can fetch by id in a transaction', async () => {
     const db = new DB({});
@@ -1745,6 +1667,7 @@ describe('database transactions', () => {
       });
       expect(insertSpy).not.toHaveBeenCalled();
     });
+    await pause(10);
     expect(insertSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -2014,7 +1937,7 @@ describe('schema changes', async () => {
       );
     });
 
-    it('addAttribute is idempoent', async () => {
+    it('addAttribute is idempotent', async () => {
       await testDBAndTransaction(
         () => new DB({ schema: defaultSchema }),
         async (db) => {
@@ -2039,6 +1962,10 @@ describe('schema changes', async () => {
           const hash2 = hashSchemaJSON(schemaToJSON(dbSchema)?.collections);
 
           expect(hash1).toBe(hash2);
+        },
+        {
+          db: false,
+          tx: true,
         }
       );
     });
@@ -2157,7 +2084,7 @@ describe('schema changes', async () => {
       );
     });
 
-    it('dropAttribute is idempoent', async () => {
+    it('dropAttribute is idempotent', async () => {
       await testDBAndTransaction(
         () => new DB({ schema: defaultSchema }),
         async (db) => {
@@ -2346,7 +2273,7 @@ describe('schema changes', async () => {
       );
     });
 
-    it('alterAttributeOption is idempoent', async () => {
+    it('alterAttributeOption is idempotent', async () => {
       await testDBAndTransaction(
         () =>
           new DB({
@@ -2506,7 +2433,7 @@ describe('schema changes', async () => {
       );
     });
 
-    it('dropAttributeOption is idempoent', async () => {
+    it('dropAttributeOption is idempotent', async () => {
       await testDBAndTransaction(
         () => new DB({ schema: defaultSchema }),
         async (db) => {
@@ -2795,7 +2722,7 @@ describe('schema changes', async () => {
       );
     });
 
-    it('setAttributeOptional is idempoent', async () => {
+    it('setAttributeOptional is idempotent', async () => {
       await testDBAndTransaction(
         () => new DB({ schema: defaultSchema }),
         async (db) => {
@@ -2867,202 +2794,35 @@ describe('schema changes', async () => {
   });
 });
 
-describe('migrations', () => {
-  const migrations: Migration[] = [
-    {
-      parent: 0,
-      version: 1,
-      up: [
-        [
-          'create_collection',
-          {
-            name: 'students',
-            schema: {
-              id: { type: 'number', options: {} },
-              name: { type: 'string', options: {} },
-            },
-          },
-        ],
-      ],
-      down: [['drop_collection', { name: 'students' }]],
-    },
-    {
-      parent: 1,
-      version: 2,
-      up: [
-        [
-          'create_collection',
-          {
-            name: 'classes',
-            schema: {
-              id: { type: 'number', options: {} },
-              department: { type: 'string', options: {} },
-            },
-          },
-        ],
-      ],
-      down: [['drop_collection', { name: 'classes' }]],
-    },
-  ];
-
-  it('initializing a DB with migrations sets the schema and migrations tracker', async () => {
-    const db = new DB({ migrations });
-    const dbSchema = await db.getSchema();
-    expect(dbSchema?.collections).toHaveProperty('students');
-    expect(dbSchema?.collections).toHaveProperty('classes');
-    expect(dbSchema?.version).toEqual(2);
-
-    const appliedMigrations = Object.values(await db.getAppliedMigrations());
-    expect(appliedMigrations.length).toEqual(2);
-    expect(appliedMigrations[0].id).toEqual(1);
-    expect(appliedMigrations[0].parent).toEqual(0);
-    expect(appliedMigrations[1].id).toEqual(2);
-    expect(appliedMigrations[1].parent).toEqual(1);
-  });
-
-  it('migrating updates migrations tracker', async () => {
-    const db = new DB();
-    await db.ready;
-    {
-      const appliedMigrations = Object.values(await db.getAppliedMigrations());
-      expect(appliedMigrations.length).toEqual(0);
-    }
-    await db.migrate([migrations[0]], 'up');
-    {
-      const appliedMigrations = Object.values(await db.getAppliedMigrations());
-      expect(appliedMigrations.length).toEqual(1);
-    }
-    await db.migrate([migrations[1]], 'up');
-    {
-      const appliedMigrations = Object.values(await db.getAppliedMigrations());
-      expect(appliedMigrations.length).toEqual(2);
-    }
-    await db.migrate([migrations[1]], 'down');
-    {
-      const appliedMigrations = Object.values(await db.getAppliedMigrations());
-      expect(appliedMigrations.length).toEqual(1);
-    }
-    await db.migrate([migrations[0]], 'down');
-    {
-      const appliedMigrations = Object.values(await db.getAppliedMigrations());
-      expect(appliedMigrations.length).toEqual(0);
-    }
-  });
-
-  it('will stop migrating on an error', async () => {
-    const migrationsCopy = JSON.parse(
-      JSON.stringify(migrations)
-    ) as Migration[];
-    migrationsCopy[1].up.push([
-      'bad_op',
-      {
-        arg: 'foo',
-      },
-    ]);
-    const db = new DB({ migrations: migrationsCopy });
-    await expect(db.ready).rejects.toThrowError(InvalidMigrationOperationError);
-    // const db = new DB({ migrations: migrationsCopy });
-
-    // const dbSchema = await db.getSchema();
-    // expect(dbSchema?.collections).toHaveProperty('students');
-    // expect(dbSchema?.collections).not.toHaveProperty('classes');
-    // expect(dbSchema?.version).toEqual(1);
-  });
-
-  it('will only run migrations if version and parent pointer match', async () => {
-    const migration01 = { parent: 0, version: 1, up: [], down: [] };
-    const migration12 = { parent: 1, version: 2, up: [], down: [] };
-    const migration13 = { parent: 1, version: 3, up: [], down: [] };
-    const migration23 = { parent: 2, version: 3, up: [], down: [] };
-    const migration34 = { parent: 3, version: 4, up: [], down: [] };
-
-    // Standard case
-    const migrationsLinked = [
-      migration01,
-      migration12,
-      migration23,
-      migration34,
-    ];
-    // Branch at 1->2, 1->3, must apply a migration with parent 2 to continue
-    const migrationsUnlinked = [
-      migration01,
-      migration12,
-      migration13,
-      migration34,
-    ];
-    // Skip 1->3, continue with 2->3
-    const migrationsAll = [
-      migration01,
-      migration12,
-      migration13,
-      migration23,
-      migration34,
-    ];
-
-    const dbLinked = new DB({ migrations: migrationsLinked });
-    const dbUnlinked = new DB({ migrations: migrationsUnlinked });
-    const dbAll = new DB({ migrations: migrationsAll });
-
-    const dbLinkedSchema = await dbLinked.getSchema();
-    const dbUnlinkedSchema = await dbUnlinked.getSchema();
-    const dbAllSchema = await dbAll.getSchema();
-    expect(dbLinkedSchema?.version).toEqual(4);
-    expect(dbUnlinkedSchema?.version).toEqual(2);
-    expect(dbAllSchema?.version).toEqual(4);
-
-    const linkedMigration = { parent: 4, version: 5, up: [], down: [] };
-    const unlinkedMigration = { parent: 3, version: 5, up: [], down: [] };
-
-    await dbAll.migrate([unlinkedMigration], 'up');
-    const dbAllSchemaAfter = await dbAll.getSchema();
-    expect(dbAllSchemaAfter?.version).toEqual(4);
-
-    await dbAll.migrate([linkedMigration], 'up');
-    const dbAllSchemaAfter2 = await dbAll.getSchema();
-    expect(dbAllSchemaAfter2?.version).toEqual(5);
-
-    // TODO: I think this would fail because migration would be applied since we dont actually store the migrations that were applied
-    // dbAll.migrate([unlinkedMigration], 'down');
-    // expect(dbAll.tripleStore.schema?.version).toEqual(5);
-    await dbAll.migrate([linkedMigration], 'down');
-    const dbAllSchemaAfter3 = await dbAll.getSchema();
-    expect(dbAllSchemaAfter3?.version).toEqual(4);
-
-    await dbAll.migrate([unlinkedMigration], 'down');
-    const dbAllSchemaAfter4 = await dbAll.getSchema();
-    expect(dbAllSchemaAfter4?.version).toEqual(4);
-  });
-
-  describe('Data deletion', () => {
-    it('clear() removes all data from the database', async () => {
-      // Schema provides us with metadata to delete
-      const schema = {
-        collections: {
-          students: {
-            schema: S.Schema({
-              id: S.String(),
-              name: S.String(),
-            }),
-          },
+describe('Data deletion', () => {
+  it('clear() removes all data from the database', async () => {
+    // Schema provides us with metadata to delete
+    const schema = {
+      collections: {
+        students: {
+          schema: S.Schema({
+            id: S.String(),
+            name: S.String(),
+          }),
         },
-      };
-      const storage = new InMemoryTupleStorage();
-      const db = new DB({ source: storage, schema: schema });
-      await db.insert('students', { id: '1', name: 'Alice' });
+      },
+    };
+    const storage = new InMemoryTupleStorage();
+    const db = new DB({ source: storage, schema: schema });
+    await db.insert('students', { id: '1', name: 'Alice' });
 
-      expect(storage.data.length).not.toBe(0);
+    expect(storage.data.length).not.toBe(0);
 
-      await db.clear({ full: true });
+    await db.clear({ full: true });
 
-      expect(storage.data.length).toBe(0);
-    });
+    expect(storage.data.length).toBe(0);
   });
 });
 
 // When updating tests, please keep the deep nesting in the test data
 describe('Nested Properties', () => {
   describe('Schemaless', () => {
-    let db: DB<undefined>;
+    let db: DB;
     const ENTITY_ID = 'business-1';
     beforeEach(async () => {
       db = new DB();
@@ -3087,9 +2847,8 @@ describe('Nested Properties', () => {
       for (const [id, data] of Object.entries(defaultData)) {
         await db.insert('Businesses', data);
       }
-
-      const query = db.query('Businesses').entityId(ENTITY_ID).build();
-      const result = (await db.fetch(query)).get(ENTITY_ID);
+      const query = db.query('Businesses').id(ENTITY_ID).build();
+      const result = (await db.fetch(query)).find((e) => e.id === ENTITY_ID);
       expect(result.address.street.number).toBe('123');
       expect(result.address.street.name).toBe('Main St');
       expect(result.address.city).toBe('San Francisco');
@@ -3101,8 +2860,10 @@ describe('Nested Properties', () => {
         await db.insert('Businesses', data);
       }
 
-      const query = db.query('Businesses').entityId(ENTITY_ID).build();
-      const preUpdateLookup = (await db.fetch(query)).get(ENTITY_ID);
+      const query = db.query('Businesses').id(ENTITY_ID).build();
+      const preUpdateLookup = (await db.fetch(query)).find(
+        (e) => e.id === ENTITY_ID
+      );
       expect(preUpdateLookup.address.street.number).toBe('123');
       expect(preUpdateLookup.address.street.name).toBe('Main St');
 
@@ -3110,7 +2871,9 @@ describe('Nested Properties', () => {
         entity.address.street.number = '456';
       });
 
-      const postUpdateLookup = (await db.fetch(query)).get(ENTITY_ID);
+      const postUpdateLookup = (await db.fetch(query)).find(
+        (e) => e.id === ENTITY_ID
+      );
       expect(postUpdateLookup.address.street.number).toBe('456');
       expect(postUpdateLookup.address.street.name).toBe('Main St');
     });
@@ -3161,13 +2924,16 @@ describe('Nested Properties', () => {
       }
 
       const results = await db.fetch(
-        db.query('Businesses').select(['address.city', 'address.state']).build()
+        db
+          .query('Businesses')
+          .select(['address.city', 'address.state', 'id'])
+          .build()
       );
       expect(results).toHaveLength(1);
-      const result = results.get(ENTITY_ID);
-      expect(result).toHaveProperty('address.city');
-      expect(result).toHaveProperty('address.state');
-      expect(result).not.toHaveProperty('address.street');
+      const result = results.find((e) => e.id === ENTITY_ID);
+      expect(result.address.city).toBe('San Francisco');
+      expect(result.address.state).toBe('CA');
+      expect(result.address).not.toHaveProperty('street');
     });
   });
   describe('Schemafull', async () => {
@@ -3214,8 +2980,8 @@ describe('Nested Properties', () => {
         await db.insert('Businesses', { ...data, id });
       }
 
-      const query = db.query('Businesses').entityId(ENTITY_ID).build();
-      const result = (await db.fetch(query)).get(ENTITY_ID);
+      const query = db.query('Businesses').id(ENTITY_ID).build();
+      const result = (await db.fetch(query)).find((e) => e.id === ENTITY_ID);
       expect(result.address.street.number).toBe('123');
       expect(result.address.street.name).toBe('Main St');
       expect(result.address.city).toBe('San Francisco');
@@ -3632,7 +3398,6 @@ describe('relational querying / sub querying', () => {
       .build();
 
     const result = await db.fetch(query);
-    // console.log('car results result', carResult);
     expect(result).toHaveLength(6);
   });
 
@@ -3652,11 +3417,10 @@ describe('relational querying / sub querying', () => {
       ])
       .build();
 
-    const result = await db.fetchTriples(query);
+    const result = await db.fetchTriples(query, { sync: true });
     const collectionsInTriples = result.reduce(
       (collectionSet, { attribute }) => {
-        const collectionName = attribute[0];
-        if (collectionName !== '_collection') {
+        if (!isCollectionAttribute(attribute)) {
           collectionSet.add(attribute[0]);
         }
         return collectionSet;
@@ -3726,7 +3490,7 @@ describe('relational querying / sub querying', () => {
 });
 
 describe('Subqueries in schema', () => {
-  let db: DB<any>;
+  let db: DB;
   beforeEach(async () => {
     db = new DB({
       schema: {
@@ -4085,7 +3849,7 @@ describe('Subqueries in schema', () => {
 });
 
 describe('social network test', () => {
-  let db: DB<any>;
+  let db: DB;
   beforeAll(async () => {
     db = new DB({
       schema: {
@@ -4195,7 +3959,7 @@ describe('state vector querying', () => {
     });
     const query = db.query('posts').build();
     const userDB = db.withSessionVars({ user_id });
-    const results = await userDB.fetchTriples(query);
+    const results = await userDB.fetchTriples(query, { sync: true });
     const resultEntities = results.reduce(
       (entitySet: Set<string>, triple: TripleRow) => {
         entitySet.add(stripCollectionFromId(triple.id));
@@ -4270,7 +4034,7 @@ describe('state vector querying', () => {
       content: '',
     });
     const query = db.query('users').include('posts').build();
-    const initialTriples = await db.fetchTriples(query);
+    const initialTriples = await db.fetchTriples(query, { sync: true });
     const stateVector = triplesToStateVector(initialTriples);
     await db.insert('posts', { id: 'post-3', author_id: user_id, content: '' });
     const queryStateVector = stateVector.reduce(
@@ -4309,7 +4073,7 @@ describe('delta querying', async () => {
     const post_id = 'post-1';
     const post_id2 = 'post-2';
     beforeEach(async () => {
-      db.clear();
+      await db.clear();
       await db.insert('posts', {
         id: post_id,
         author_id: user_id,
@@ -4326,7 +4090,7 @@ describe('delta querying', async () => {
       const query = db.query('posts').where('author_id', '=', user_id).build();
 
       const addedTriples: TripleRow[] = [];
-      db.tripleStore.onInsert((newTriples) => {
+      db.tripleStore.afterCommit((newTriples) => {
         addedTriples.push(...[...Object.values(newTriples)].flat());
       });
       await db.insert('posts', {
@@ -4341,13 +4105,16 @@ describe('delta querying', async () => {
       });
 
       const deltaTriples = await fetchDeltaTriples(
-        db,
         db.tripleStore,
         query,
         addedTriples,
         initialFetchExecutionContext(),
         {
           schema: (await db.getSchema())?.collections,
+          session: {
+            roles: db.sessionRoles,
+            systemVars: db.systemVars,
+          },
         }
       );
       expect(deltaTriples.length).toBeGreaterThan(0);
@@ -4360,18 +4127,23 @@ describe('delta querying', async () => {
       const query = db.query('posts').where('author_id', '=', user_id).build();
 
       const addedTriples: TripleRow[] = [];
-      db.tripleStore.onInsert((newTriples) => {
+      db.tripleStore.afterCommit((newTriples) => {
         addedTriples.push(...[...Object.values(newTriples)].flat());
       });
       await db.delete('posts', post_id);
 
       const deltaTriples = await fetchDeltaTriples(
-        db,
         db.tripleStore,
         query,
         addedTriples,
         initialFetchExecutionContext(),
-        { schema: (await db.getSchema())?.collections }
+        {
+          schema: (await db.getSchema())?.collections,
+          session: {
+            roles: db.sessionRoles,
+            systemVars: db.systemVars,
+          },
+        }
       );
       expect(deltaTriples.length).toBeGreaterThan(0);
       expect(
@@ -4383,7 +4155,7 @@ describe('delta querying', async () => {
       const query = db.query('posts').where('author_id', '=', user_id).build();
 
       const addedTriples: TripleRow[] = [];
-      db.tripleStore.onInsert((newTriples) => {
+      db.tripleStore.afterCommit((newTriples) => {
         addedTriples.push(...[...Object.values(newTriples)].flat());
       });
 
@@ -4391,12 +4163,17 @@ describe('delta querying', async () => {
         entity.author_id = user_id2;
       });
       const deltaTriples = await fetchDeltaTriples(
-        db,
         db.tripleStore,
         query,
         addedTriples,
         initialFetchExecutionContext(),
-        { schema: (await db.getSchema())?.collections }
+        {
+          schema: (await db.getSchema())?.collections,
+          session: {
+            roles: db.sessionRoles,
+            systemVars: db.systemVars,
+          },
+        }
       );
       expect(deltaTriples.length).toBeGreaterThan(0);
       expect(
@@ -4408,7 +4185,7 @@ describe('delta querying', async () => {
       const query = db.query('posts').where('author_id', '=', user_id).build();
 
       const addedTriples: TripleRow[] = [];
-      db.tripleStore.onInsert((newTriples) => {
+      db.tripleStore.afterCommit((newTriples) => {
         addedTriples.push(...[...Object.values(newTriples)].flat());
       });
       await db.insert('posts', {
@@ -4417,12 +4194,17 @@ describe('delta querying', async () => {
         content: '',
       });
       const deltaTriples = await fetchDeltaTriples(
-        db,
         db.tripleStore,
         query,
         addedTriples,
         initialFetchExecutionContext(),
-        { schema: (await db.getSchema())?.collections }
+        {
+          schema: (await db.getSchema())?.collections,
+          session: {
+            roles: db.sessionRoles,
+            systemVars: db.systemVars,
+          },
+        }
       );
       expect(deltaTriples).toHaveLength(0);
     });
@@ -4500,11 +4282,11 @@ describe('delta querying', async () => {
         .query('users')
         .where('posts.created_at', '>', new Date('2022-05-01'))
         .build();
-      const initialTriples = await db.fetchTriples(query);
+      const initialTriples = await db.fetchTriples(query, { sync: true });
       expect(initialTriples.length).toBeGreaterThan(0);
 
       const addedTriples: TripleRow[] = [];
-      db.tripleStore.onInsert((newTriples) => {
+      db.tripleStore.afterCommit((newTriples) => {
         addedTriples.push(...[...Object.values(newTriples)].flat());
       });
 
@@ -4517,12 +4299,17 @@ describe('delta querying', async () => {
       });
       const fetchQuery = prepareQuery(query, schema['collections'], {}, {});
       const deltaTriples = await fetchDeltaTriples(
-        db,
         db.tripleStore,
         fetchQuery,
         addedTriples,
         initialFetchExecutionContext(),
-        { schema: (await db.getSchema())?.collections }
+        {
+          schema: (await db.getSchema())?.collections,
+          session: {
+            roles: db.sessionRoles,
+            systemVars: db.systemVars,
+          },
+        }
       );
       expect(deltaTriples.length).toBeGreaterThan(0);
       expect(deltaTriples).toEqual(
@@ -4538,11 +4325,11 @@ describe('delta querying', async () => {
         .query('users')
         .where('posts.created_at', '>', new Date('2022-05-01'))
         .build();
-      const initialTriples = await db.fetchTriples(query);
+      const initialTriples = await db.fetchTriples(query, { sync: true });
       expect(initialTriples.length).toBeGreaterThan(0);
 
       const addedTriples: TripleRow[] = [];
-      db.tripleStore.onInsert((newTriples) => {
+      db.tripleStore.afterCommit((newTriples) => {
         addedTriples.push(...[...Object.values(newTriples)].flat());
       });
       // insert another post after the queried date
@@ -4555,12 +4342,17 @@ describe('delta querying', async () => {
 
       const fetchQuery = prepareQuery(query, schema['collections'], {}, {});
       const deltaTriples = await fetchDeltaTriples(
-        db,
         db.tripleStore,
         fetchQuery,
         addedTriples,
         initialFetchExecutionContext(),
-        { schema: (await db.getSchema())?.collections }
+        {
+          schema: (await db.getSchema())?.collections,
+          session: {
+            roles: db.sessionRoles,
+            systemVars: db.systemVars,
+          },
+        }
       );
 
       expect(deltaTriples.length).toBe(0);
@@ -4721,11 +4513,13 @@ describe('delta querying', async () => {
         const clientDB = new DB({ schema });
         await insertSampleData(serverDB);
 
-        const initialTriples = await serverDB.fetchTriples(query(serverDB));
+        const initialTriples = await serverDB.fetchTriples(query(serverDB), {
+          sync: true,
+        });
         await clientDB.tripleStore.insertTriples(initialTriples);
 
         const addedTriples: TripleRow[] = [];
-        serverDB.tripleStore.onInsert((newTriples) => {
+        serverDB.tripleStore.afterCommit((newTriples) => {
           addedTriples.push(...[...Object.values(newTriples)].flat());
         });
 
@@ -4738,12 +4532,17 @@ describe('delta querying', async () => {
           {}
         );
         const deltaTriples = await fetchDeltaTriples(
-          serverDB,
           serverDB.tripleStore,
           fetchQuery,
           addedTriples,
           initialFetchExecutionContext(),
-          { schema: (await serverDB.getSchema())?.collections }
+          {
+            schema: (await serverDB.getSchema())?.collections,
+            session: {
+              roles: serverDB.sessionRoles,
+              systemVars: serverDB.systemVars,
+            },
+          }
         );
 
         await clientDB.tripleStore.insertTriples(deltaTriples);
@@ -4877,7 +4676,7 @@ describe('Graph-like queries', () => {
       .build();
 
     const result = await db.fetch(query);
-    expect(Array.from(result.keys())).toEqual([
+    expect(result.map((e) => e.id)).toEqual([
       'Airbus-A380',
       'Boeing-737',
       'Boeing-747',
@@ -4947,6 +4746,7 @@ describe('selecting subqueries', () => {
   it('can select subqueries', async () => {
     const query = db
       .query('users')
+      .select(['id'])
       .select([
         'id',
         // {
@@ -4959,15 +4759,21 @@ describe('selecting subqueries', () => {
         //   cardinality: 'many',
         // },
       ])
-      .include('posts', {
-        subquery: db.query('posts').where('author_id', '=', '$id').build(),
-        cardinality: 'many',
-      })
+      .subquery(
+        'posts',
+        db.query('posts').where('author_id', '=', '$id').build(),
+        'many'
+      )
       .build();
     const result = await db.fetch(query);
-    expect(result.get('user-1')).toHaveProperty('posts');
-    expect(result.get('user-1')!.posts).toHaveLength(1);
-    expect(result.get('user-1')!.posts.get('post-1')).toMatchObject({
+
+    expect(result.find((e) => e.id === 'user-1')).toHaveProperty('posts');
+    expect(result.find((e) => e.id === 'user-1')!.posts).toHaveLength(1);
+    expect(
+      result
+        .find((e) => e.id === 'user-1')!
+        .posts.find((e) => e.id === 'post-1')
+    ).toMatchObject({
       id: 'post-1',
       content: 'Hello World!',
       author_id: 'user-1',
@@ -5002,27 +4808,34 @@ describe('selecting subqueries', () => {
         //   cardinality: 'many',
         // },
       ])
-      .include('posts', {
-        subquery: db
+      .subquery(
+        'posts',
+        db
           .query('posts')
           .where('author_id', '=', '$id')
           .select(['id'])
-          .include('likedBy', {
-            subquery: db
-              .query('users')
-              .where('liked_post_ids', '=', '$id')
-              .build(),
-            cardinality: 'many',
-          })
+          .subquery(
+            'likedBy',
+            db.query('users').where('liked_post_ids', '=', '$id').build(),
+            'many'
+          )
           .build(),
-        cardinality: 'many',
-      })
+        'many'
+      )
       .build();
     const result = await db.fetch(query);
-    expect(result.get('user-1')).toHaveProperty('posts');
-    expect(result.get('user-1')!.posts).toHaveLength(1);
-    expect(result.get('user-1')!.posts.get('post-1')!.likedBy).toBeDefined();
-    expect(result.get('user-1')!.posts.get('post-1')!.likedBy).toHaveLength(3);
+    expect(result.find((e) => e.id === 'user-1')).toHaveProperty('posts');
+    expect(result.find((e) => e.id === 'user-1')!.posts).toHaveLength(1);
+    expect(
+      result
+        .find((e) => e.id === 'user-1')!
+        .posts.find((e) => e.id === 'post-1')!.likedBy
+    ).toBeDefined();
+    expect(
+      result
+        .find((e) => e.id === 'user-1')!
+        .posts.find((e) => e.id === 'post-1')!.likedBy
+    ).toHaveLength(3);
   });
 
   it('can subscribe with subqueries', async () => {
@@ -5040,18 +4853,25 @@ describe('selecting subqueries', () => {
         //   cardinality: 'many',
         // },
       ])
-      .include('posts', {
-        subquery: db.query('posts').where('author_id', '=', '$id').build(),
-        cardinality: 'many',
-      })
+      .subquery(
+        'posts',
+        db.query('posts').where('author_id', '=', '$id').build(),
+        'many'
+      )
       .build();
     await testSubscription(db, query, [
       {
         check: (results) => {
           expect(results).toHaveLength(3);
-          expect(results.get('user-1')).toHaveProperty('posts');
-          expect(results.get('user-1')!.posts).toHaveLength(1);
-          expect(results.get('user-1')!.posts.get('post-1')).toMatchObject({
+          expect(results.find((e) => e.id === 'user-1')).toHaveProperty(
+            'posts'
+          );
+          expect(results.find((e) => e.id === 'user-1')!.posts).toHaveLength(1);
+          expect(
+            results
+              .find((e) => e.id === 'user-1')!
+              .posts.find((e) => e.id === 'post-1')
+          ).toMatchObject({
             id: 'post-1',
             content: 'Hello World!',
             author_id: 'user-1',
@@ -5069,9 +4889,15 @@ describe('selecting subqueries', () => {
         },
         check: (results) => {
           expect(results).toHaveLength(3);
-          expect(results.get('user-1')).toHaveProperty('posts');
-          expect(results.get('user-1')!.posts).toHaveLength(2);
-          expect(results.get('user-1')!.posts.get('post-4')).toMatchObject({
+          expect(results.find((e) => e.id === 'user-1')).toHaveProperty(
+            'posts'
+          );
+          expect(results.find((e) => e.id === 'user-1')!.posts).toHaveLength(2);
+          expect(
+            results
+              .find((e) => e.id === 'user-1')!
+              .posts.find((e) => e.id === 'post-4')
+          ).toMatchObject({
             id: 'post-4',
             content: 'Hello World!',
             author_id: 'user-1',
@@ -5096,14 +4922,17 @@ describe('selecting subqueries', () => {
         //   cardinality: 'one',
         // },
       ])
-      .include('favoritePost', {
-        subquery: db.query('posts').where('author_id', '=', '$id').build(),
-        cardinality: 'one',
-      })
+      .subquery(
+        'favoritePost',
+        db.query('posts').where('author_id', '=', '$id').build(),
+        'one'
+      )
       .build();
     const result = await db.fetch(query);
-    expect(result.get('user-1')).toHaveProperty('favoritePost');
-    expect(result.get('user-1')!.favoritePost).toMatchObject({
+    expect(result.find((e) => e.id === 'user-1')).toHaveProperty(
+      'favoritePost'
+    );
+    expect(result.find((e) => e.id === 'user-1')!.favoritePost).toMatchObject({
       id: 'post-1',
       content: 'Hello World!',
       author_id: 'user-1',
@@ -5125,14 +4954,17 @@ describe('selecting subqueries', () => {
         //   cardinality: 'one',
         // },
       ])
-      .include('favoritePost', {
-        subquery: db.query('posts').where('author_id', '=', 'george').build(),
-        cardinality: 'one',
-      })
+      .subquery(
+        'favoritePost',
+        db.query('posts').where('author_id', '=', 'george').build(),
+        'one'
+      )
       .build();
     const result = await db.fetch(query);
-    expect(result.get('user-1')).toHaveProperty('favoritePost');
-    expect(result.get('user-1')!.favoritePost).toEqual(null);
+    expect(result.find((e) => e.id === 'user-1')).toHaveProperty(
+      'favoritePost'
+    );
+    expect(result.find((e) => e.id === 'user-1')!.favoritePost).toEqual(null);
   });
 });
 
@@ -5246,24 +5078,34 @@ describe('selecting subqueries from schema', () => {
     const query = user1DB
       .query('users')
       .include('posts')
-      .include('friends', { where: [['name', 'like', '%e']] })
+      .include('friends', {
+        _rel: 'friends',
+        where: [['name', 'like', '%e']],
+      })
       .build();
 
     const result = await user1DB.fetch(query);
-
     // Other fields are included in the selection
-    expect(result.get('user-1')).toHaveProperty('name');
+    expect(result.find((e) => e.id === 'user-1')).toHaveProperty('name');
 
-    expect(result.get('user-1')).toHaveProperty('posts');
-    expect(result.get('user-1')!.posts).toHaveLength(1);
-    expect(result.get('user-1')!.posts.get('post-1')).toMatchObject({
+    expect(result.find((e) => e.id === 'user-1')).toHaveProperty('posts');
+    expect(result.find((e) => e.id === 'user-1')!.posts).toHaveLength(1);
+    expect(
+      result
+        .find((e) => e.id === 'user-1')!
+        .posts!.find((e) => e.id === 'post-1')
+    ).toMatchObject({
       id: 'post-1',
       content: 'Hello World!',
       author_id: 'user-1',
       topics: new Set(['comedy', 'sports']),
     });
-    expect(result.get('user-1')!.friends).toHaveLength(1);
-    expect(result.get('user-1')!.friends.get('user-3')).toMatchObject({
+    expect(result.find((e) => e.id === 'user-1')!.friends).toHaveLength(1);
+    expect(
+      result
+        .find((e) => e.id === 'user-1')!
+        .friends.find((e) => e.id === 'user-3')
+    ).toMatchObject({
       id: 'user-3',
       name: 'Charlie',
       friend_ids: new Set(['user-1', 'user-2']),
@@ -5273,8 +5115,7 @@ describe('selecting subqueries from schema', () => {
   it('can have multiple results have the same entity as a relation', async () => {
     const query = user1DB.query('likes').include('post').build();
     const results = await user1DB.fetch(query);
-    console.log(results);
-    expect(results.size).toBe(3);
+    expect(results.length).toBe(3);
     const postsMap = new Map();
     for (const result of results.values()) {
       expect(result.post).not.toBeNull();
@@ -5291,8 +5132,8 @@ describe('selecting subqueries from schema', () => {
     const query = user1DB.query('users').build();
 
     const result = await user1DB.fetch(query);
-    expect(result.get('user-1')).not.toHaveProperty('posts');
-    expect(result.get('user-1')).not.toHaveProperty('friends');
+    expect(result.find((e) => e.id === 'user-1')).not.toHaveProperty('posts');
+    expect(result.find((e) => e.id === 'user-1')).not.toHaveProperty('friends');
   });
 
   // TODO: determine if we want to support this
@@ -5302,7 +5143,7 @@ describe('selecting subqueries from schema', () => {
     }))!;
     expect(result).toHaveProperty('posts');
     expect(result.posts).toHaveLength(1);
-    expect(result.posts.get('post-1')).toMatchObject({
+    expect(result.posts.find((e) => e.id === 'post-1')).toMatchObject({
       id: 'post-1',
       content: 'Hello World!',
       author_id: 'user-1',
@@ -5312,16 +5153,24 @@ describe('selecting subqueries from schema', () => {
   it('can select subsubqueries', async () => {
     const query = user1DB
       .query('users')
-      .include('posts', { include: { likes: null } })
+      .include('posts', { _rel: 'posts', include: { likes: null } })
       .build();
     const result = await user1DB.fetch(query);
     // Other fields are included in the selection
-    expect(result.get('user-1')).toHaveProperty('name');
-    expect(result.get('user-1')).toHaveProperty('posts');
-    expect(result.get('user-1')!.posts).toHaveLength(1);
-    expect(result.get('user-1')!.posts.get('post-1')).toBeDefined();
+    expect(result.find((e) => e.id === 'user-1')).toHaveProperty('name');
+    expect(result.find((e) => e.id === 'user-1')).toHaveProperty('posts');
+    expect(result.find((e) => e.id === 'user-1')!.posts).toHaveLength(1);
+    expect(
+      result
+        .find((e) => e.id === 'user-1')!
+        .posts.find((e) => e.id === 'post-1')
+    ).toBeDefined();
     // fails
-    expect(result.get('user-1')!.posts.get('post-1')?.likes).toBeDefined();
+    expect(
+      result
+        .find((e) => e.id === 'user-1')!
+        .posts.find((e) => e.id === 'post-1')?.likes
+    ).toBeDefined();
   });
   it('should throw an error if you try to update a subquery', async () => {
     expect(
@@ -5348,21 +5197,22 @@ describe('selecting subqueries from schema', () => {
         user1DB.query('users').include('posts').build()
       );
       expect(result).toHaveLength(3);
-      expect(result.get('user-1')).toHaveProperty('posts');
-      expect(result.get('user-1')!.posts).toHaveLength(1);
+      expect(result.find((e) => e.id === 'user-1')).toHaveProperty('posts');
+      expect(result.find((e) => e.id === 'user-1')!.posts).toHaveLength(1);
 
-      expect(result.get('user-2')).toHaveProperty('posts');
-      expect(result.get('user-2')!.posts).toHaveLength(0);
+      expect(result.find((e) => e.id === 'user-2')).toHaveProperty('posts');
+      expect(result.find((e) => e.id === 'user-2')!.posts).toHaveLength(0);
 
-      expect(result.get('user-3')).toHaveProperty('posts');
-      expect(result.get('user-3')!.posts).toHaveLength(0);
+      expect(result.find((e) => e.id === 'user-3')).toHaveProperty('posts');
+      expect(result.find((e) => e.id === 'user-3')!.posts).toHaveLength(0);
     }
   });
 
   it('skipRules option should skip rules for subqueries', async () => {
-    const query = db.query('users').include('posts').build();
+    const userDb = db.withSessionVars({ USER_ID: 'irrelevant-user' });
+    const query = userDb.query('users').include('posts').build();
     {
-      const results = await db.fetch(query, { skipRules: false });
+      const results = await userDb.fetch(query, { skipRules: false });
       expect([...results.values()].map((user) => user.posts)).toMatchObject([
         new Map(),
         new Map(),
@@ -5370,23 +5220,23 @@ describe('selecting subqueries from schema', () => {
       ]);
     }
 
-    const results = await db.fetch(query, {
+    const results = await userDb.fetch(query, {
       skipRules: true,
     });
     expect(results).toHaveLength(3);
-    expect(results.get('user-1')).toHaveProperty('posts');
-    expect(results.get('user-1')!.posts).toHaveLength(1);
-    expect(results.get('user-2')).toHaveProperty('posts');
-    expect(results.get('user-2')!.posts).toHaveLength(1);
-    expect(results.get('user-3')).toHaveProperty('posts');
-    expect(results.get('user-3')!.posts).toHaveLength(1);
+    expect(results.find((e) => e.id === 'user-1')).toHaveProperty('posts');
+    expect(results.find((e) => e.id === 'user-1')!.posts).toHaveLength(1);
+    expect(results.find((e) => e.id === 'user-2')).toHaveProperty('posts');
+    expect(results.find((e) => e.id === 'user-2')!.posts).toHaveLength(1);
+    expect(results.find((e) => e.id === 'user-3')).toHaveProperty('posts');
+    expect(results.find((e) => e.id === 'user-3')!.posts).toHaveLength(1);
   });
 
   it('can select a singleton via a subquery', async () => {
     const query = user1DB.query('posts').include('author').build();
     const result = await user1DB.fetch(query);
-    expect(result.get('post-1')).toHaveProperty('author');
-    expect(result.get('post-1').author).toMatchObject({
+    expect(result.find((e) => e.id === 'post-1')).toHaveProperty('author');
+    expect(result.find((e) => e.id === 'post-1').author).toMatchObject({
       id: 'user-1',
       name: 'Alice',
       friend_ids: new Set(['user-2', 'user-3']),
@@ -5396,24 +5246,25 @@ describe('selecting subqueries from schema', () => {
   it('will return null if a singleton subquery has no results', async () => {
     const query = user1DB
       .query('posts')
-      .include('author', { where: [['id', '=', 'george']] })
+      .include('author', {
+        _rel: 'author',
+        where: [['id', '=', 'george']],
+      })
       .build();
     const result = await user1DB.fetch(query);
-    expect(result.get('post-1')).toHaveProperty('author');
-    expect(result.get('post-1').author).toEqual(null);
+    expect(result.find((e) => e.id === 'post-1')).toHaveProperty('author');
+    expect(result.find((e) => e.id === 'post-1').author).toEqual(null);
   });
-  it('subscribe to subqueries when using entityId in query', async () => {
-    const query = user1DB
-      .query('users')
-      .entityId('user-1')
-      .include('posts')
-      .build();
+  it('subscribe to subqueries when using id() in query', async () => {
+    const query = user1DB.query('users').id('user-1').include('posts').build();
     await testSubscription(user1DB, query, [
       {
         check: (results) => {
           expect(results).toHaveLength(1);
-          expect(results.get('user-1')).toHaveProperty('posts');
-          expect(results.get('user-1')!.posts).toHaveLength(1);
+          expect(results.find((e) => e.id === 'user-1')).toHaveProperty(
+            'posts'
+          );
+          expect(results.find((e) => e.id === 'user-1')!.posts).toHaveLength(1);
         },
       },
       {
@@ -5426,9 +5277,15 @@ describe('selecting subqueries from schema', () => {
         },
         check: (results) => {
           expect(results).toHaveLength(1);
-          expect(results.get('user-1')).toHaveProperty('posts');
-          expect(results.get('user-1')!.posts).toHaveLength(2);
-          expect(results.get('user-1')!.posts.get('post-4')).toMatchObject({
+          expect(results.find((e) => e.id === 'user-1')).toHaveProperty(
+            'posts'
+          );
+          expect(results.find((e) => e.id === 'user-1')!.posts).toHaveLength(2);
+          expect(
+            results
+              .find((e) => e.id === 'user-1')!
+              .posts.find((e) => e.id === 'post-4')
+          ).toMatchObject({
             id: 'post-4',
             content: 'Hello World!',
             author_id: 'user-1',
@@ -5439,32 +5296,109 @@ describe('selecting subqueries from schema', () => {
   });
 });
 
-it('clearing a database resets the schema', async () => {
-  const schema = {
-    collections: {
-      test: {
-        schema: S.Schema({
-          id: S.String(),
-          name: S.String(),
-        }),
+describe('db.clear()', () => {
+  it('full clear deletes all data and metadata and resets state', async () => {
+    const schema = {
+      collections: {
+        test: {
+          schema: S.Schema({
+            id: S.String(),
+            name: S.String(),
+          }),
+        },
       },
-    },
-    version: 0,
-  };
-  const db = new DB({ schema });
-  await db.ready;
+      version: 0,
+    };
+    const clock = new DurableClock('default', 'test');
+    const db = new DB({ schema, clock });
+    await db.insert('test', { id: '1', name: 'alice' });
+    await db.insert('test', { id: '2', name: 'bob' });
 
-  // Should load schema into cache
-  const resultSchema = await db.getSchema();
-  const cacheSchema = db.schema!;
-  expect(schemaToJSON(resultSchema)).toEqual(schemaToJSON(schema));
-  expect(schemaToJSON(cacheSchema)).toEqual(schemaToJSON(schema));
+    const originalMetadata = JSON.parse(
+      JSON.stringify(
+        await genToArr(
+          db.tripleStore.tupleStore.scan({
+            prefix: ['metadata'],
+          })
+        )
+      )
+    );
 
-  await db.clear({ full: true });
+    // State is defined
+    {
+      const result = await db.fetch({ collectionName: 'test' });
+      expect(result.length).toBe(2);
 
-  // Should reset schema cache
-  const schemaAfterClear = await db.getSchema();
-  expect(schemaAfterClear).toEqual(undefined);
+      const schema = await db.getSchema();
+      expect(schema).not.toEqual(undefined);
+    }
+
+    await db.clear({ full: true });
+
+    {
+      const result = await db.fetch({ collectionName: 'test' });
+      expect(result.length).toBe(0);
+
+      const schema = await db.getSchema();
+      expect(schema).toEqual(undefined);
+
+      const metadataTuples = await genToArr(
+        db.tripleStore.tupleStore.scan({ prefix: ['metadata'] })
+      );
+      expect(metadataTuples).not.toEqual(originalMetadata);
+    }
+  });
+  it('partial clear deletes all data, but retains metadata and state', async () => {
+    const schema = {
+      collections: {
+        test: {
+          schema: S.Schema({
+            id: S.String(),
+            name: S.String(),
+          }),
+        },
+      },
+      version: 0,
+    };
+    const clock = new DurableClock('default', 'test');
+    const db = new DB({ schema, clock });
+    await db.insert('test', { id: '1', name: 'alice' });
+    await db.insert('test', { id: '2', name: 'bob' });
+
+    const originalMetadata = JSON.parse(
+      JSON.stringify(
+        (
+          await genToArr(
+            db.tripleStore.tupleStore.scan({ prefix: ['metadata'] })
+          )
+        ).filter((t) => t.key[1] !== 'clock')
+      )
+    );
+
+    // State is defined
+    {
+      const result = await db.fetch({ collectionName: 'test' });
+      expect(result.length).toBe(2);
+
+      const schema = await db.getSchema();
+      expect(schema).not.toEqual(undefined);
+    }
+
+    await db.clear();
+
+    {
+      const result = await db.fetch({ collectionName: 'test' });
+      expect(result.length).toBe(0);
+
+      const schema = await db.getSchema();
+      expect(schema).not.toEqual(undefined);
+
+      const metadataTuples = (
+        await genToArr(db.tripleStore.tupleStore.scan({ prefix: ['metadata'] }))
+      ).filter((t) => t.key[1] !== 'clock');
+      expect(metadataTuples).toEqual(originalMetadata);
+    }
+  });
 });
 
 it('can upsert data with optional properties', async () => {
@@ -5578,8 +5512,8 @@ describe('variable conflicts', () => {
         .where(['name', '=', '$global.name'])
         .build();
       const result = await db.fetch(query);
-      expect(result.size).toBe(1);
-      expect(Array.from(result.keys())).toStrictEqual(['1']);
+      expect(result.length).toBe(1);
+      expect(result.map((e) => e.id)).toStrictEqual(['1']);
     }
 
     // Can query with session variables
@@ -5589,8 +5523,8 @@ describe('variable conflicts', () => {
         .where(['name', '=', '$session.name'])
         .build();
       const result = await db.fetch(query);
-      expect(result.size).toBe(1);
-      expect(Array.from(result.keys())).toStrictEqual(['2']);
+      expect(result.length).toBe(1);
+      expect(result.map((e) => e.id)).toStrictEqual(['2']);
     }
 
     // Can query with query variables
@@ -5601,8 +5535,8 @@ describe('variable conflicts', () => {
         .where(['name', '=', '$query.name'])
         .build();
       const result = await db.fetch(query);
-      expect(result.size).toBe(1);
-      expect(Array.from(result.keys())).toStrictEqual(['3']);
+      expect(result.length).toBe(1);
+      expect(result.map((e) => e.id)).toStrictEqual(['3']);
     }
 
     // Can query with subquery variables (each colletion has a 'name' field)
@@ -5641,8 +5575,8 @@ describe('variable conflicts', () => {
           .where(['department.head.name', '=', '$0.name'])
           .build();
         const result = await db.fetch(query);
-        expect(result.size).toBe(1);
-        expect(Array.from(result.keys())).toStrictEqual(['5']);
+        expect(result.length).toBe(1);
+        expect(result.map((e) => e.id)).toStrictEqual(['5']);
       }
 
       {
@@ -5652,22 +5586,29 @@ describe('variable conflicts', () => {
           .where(['department.head.name', '=', '$0.department.name'])
           .build();
         const result = await db.fetch(query);
-        expect(result.size).toBe(3);
-        expect(Array.from(result.keys())).toStrictEqual(['5', '6', '7']);
+        expect(result.length).toBe(3);
+        expect(result.map((e) => e.id)).toStrictEqual(['5', '6', '7']);
       }
 
-      // TODO: support nested relationship paths
       {
         // Classes where name of the department head matches the name of the department head
         const query = db
           .query('classes')
           .where(['department.head.name', '=', '$0.department.head.name'])
           .build();
-        console.log('\n\n RUNNING QUERY \n\n');
         const result = await db.fetch(query);
-        expect(result.size).toBe(7);
+        expect(result.length).toBe(7);
       }
     }
+  });
+
+  it('Will throw an error if a variable is referenced that does not exist', async () => {
+    const db = baseDB.withSessionVars({ name: 'MATH101' });
+    await expect(
+      db.fetch(
+        db.query('classes').where(['name', '=', '$session.$name']).build()
+      )
+    ).rejects.toThrow(SessionVariableNotFoundError);
   });
 
   it('can access a nested data and record types via a variable', async () => {
@@ -5718,11 +5659,11 @@ describe('variable conflicts', () => {
     {
       const query = db.query('users').select(['id']).include('city').build();
       const result = await db.fetch(query);
-      expect(result.get('1')).toMatchObject({
+      expect(result.find((e) => e.id === '1')).toMatchObject({
         id: '1',
         city: { id: '1', name: 'Springfield', state: 'IL' },
       });
-      expect(result.get('2')).toMatchObject({
+      expect(result.find((e) => e.id === '2')).toMatchObject({
         id: '2',
         city: { id: '2', name: 'Chicago', state: 'IL' },
       });
@@ -5736,8 +5677,8 @@ describe('variable conflicts', () => {
         .where(['address.city_id', '=', '$session.city.id'])
         .build();
       const result = await sessionDB.fetch(query);
-      expect(result.size).toBe(1);
-      expect(result.get('2')).toMatchObject({
+      expect(result.length).toBe(1);
+      expect(result.find((e) => e.id === '2')).toMatchObject({
         id: '2',
         name: 'Bob',
         address: {
@@ -5776,14 +5717,20 @@ describe('variable conflicts', () => {
       const bobDB = db.withSessionVars({ SESSION_USER_ID: '2' });
       {
         const result = await aliceDB.fetch(aliceDB.query('users').build());
-        expect(result.size).toBe(1);
-        expect(result.get('1')).toMatchObject({ id: '1', name: 'Alice' });
+        expect(result.length).toBe(1);
+        expect(result.find((e) => e.id === '1')).toMatchObject({
+          id: '1',
+          name: 'Alice',
+        });
       }
 
       {
         const result = await bobDB.fetch(db.query('users').build());
-        expect(result.size).toBe(1);
-        expect(result.get('2')).toMatchObject({ id: '2', name: 'Bob' });
+        expect(result.length).toBe(1);
+        expect(result.find((e) => e.id === '2')).toMatchObject({
+          id: '2',
+          name: 'Bob',
+        });
       }
     });
     it('rules properly reference current entity', async () => {
@@ -5911,37 +5858,33 @@ describe('variable conflicts', () => {
         const result = await db.fetch(
           db.query('users').include('posts').build()
         );
-        expect(result.get('1')?.posts).toStrictEqual(
-          new Map([
-            ['1', { id: '1', content: 'Hello1', author_id: '1' }],
-            ['2', { id: '2', content: 'Hello2', author_id: '1' }],
-          ])
-        );
-        expect(result.get('2')?.posts).toStrictEqual(
-          new Map([
-            ['3', { id: '3', content: 'Hello3', author_id: '2' }],
-            ['4', { id: '4', content: 'Hello4', author_id: '2' }],
-          ])
-        );
+        expect(result.find((e) => e.id === '1')?.posts).toStrictEqual([
+          { id: '1', content: 'Hello1', author_id: '1' },
+          { id: '2', content: 'Hello2', author_id: '1' },
+        ]);
+        expect(result.find((e) => e.id === '2')?.posts).toStrictEqual([
+          { id: '3', content: 'Hello3', author_id: '2' },
+          { id: '4', content: 'Hello4', author_id: '2' },
+        ]);
       }
 
       {
         const result = await db.fetch(
           db.query('posts').include('author').build()
         );
-        expect(result.get('1')?.author).toStrictEqual({
+        expect(result.find((e) => e.id === '1')?.author).toStrictEqual({
           id: '1',
           name: 'Alice',
         });
-        expect(result.get('2')?.author).toStrictEqual({
+        expect(result.find((e) => e.id === '2')?.author).toStrictEqual({
           id: '1',
           name: 'Alice',
         });
-        expect(result.get('3')?.author).toStrictEqual({
+        expect(result.find((e) => e.id === '3')?.author).toStrictEqual({
           id: '2',
           name: 'Bob',
         });
-        expect(result.get('4')?.author).toStrictEqual({
+        expect(result.find((e) => e.id === '4')?.author).toStrictEqual({
           id: '2',
           name: 'Bob',
         });

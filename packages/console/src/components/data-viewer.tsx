@@ -10,7 +10,7 @@ import {
   TriplitColumnHeader,
   RelationCell,
 } from './data-table';
-import { Button, Checkbox, Tooltip } from '@triplit/ui';
+import { Button, Checkbox, Select, Tooltip } from '@triplit/ui';
 import { Plus } from 'lucide-react';
 import {
   SchemaAttributeSheet,
@@ -21,12 +21,16 @@ import { DeleteAttributeDialog } from './delete-attribute-dialog';
 import { atom, useAtom } from 'jotai';
 import { FiltersPopover } from './filters-popover';
 import { OrderPopover } from './order-popover';
-import { SchemaDefinition } from '../../../db/src/data-types/serialization';
 import { DeleteEntitiesDialog } from './delete-entities-dialog.js';
 import { CollectionMenu } from './collection-menu.js';
 import { DeleteCollectionDialog } from './delete-collection-dialog.js';
 import { flattenSchema } from 'src/utils/flatten-schema.js';
-import { diffSchemas, getSchemaDiffIssues } from '@triplit/db';
+import {
+  TriplitError,
+  getVariableComponents,
+  isValueVariable,
+  SchemaDefinition,
+} from '@triplit/db';
 import { deleteAttribute } from 'src/utils/schema.js';
 import { useToast } from 'src/hooks/useToast.js';
 
@@ -35,6 +39,8 @@ const deleteAttributeDialogIsOpenAtom = atom(false);
 if (typeof window !== 'undefined') window.client = consoleClient;
 
 const PAGE_SIZE = 25;
+
+const LOAD_MORE_OPTIONS = [25, 50, 100];
 
 export function DataViewer({
   client,
@@ -62,10 +68,11 @@ export function DataViewer({
   >(null);
   const [selectedAttribute, setSelectedAttribute] = useState<string>('');
   const [selectedCell, setSelectedCell] = useState<string | null>(null);
-  const selectedCollection = query?.collection;
+  const selectedCollection = query.collection!;
   const [selectedEntities, setSelectedEntities] = useState<Set<string>>(
     new Set()
   );
+  const [pageSize, setPageSize] = useState(PAGE_SIZE);
   const collectionSchema = schema?.collections?.[selectedCollection];
   const filters = query.where;
   const order = query.order;
@@ -76,8 +83,8 @@ export function DataViewer({
         .query(selectedCollection)
         .order(...order)
         .where(filters)
-        .limit(PAGE_SIZE),
-    [selectedCollection, order, filters]
+        .limit(pageSize),
+    [selectedCollection, order, filters, pageSize]
   );
 
   // TODO remove localOnly when we get rid of the whole-collection query above
@@ -89,10 +96,6 @@ export function DataViewer({
     hasMore,
     loadMore,
   } = useInfiniteQuery(client, triplitQuery);
-  const sortedAndFilteredEntities = useMemo(
-    () => Array.from(orderedAndFilteredResults ?? []),
-    [orderedAndFilteredResults]
-  );
 
   const flattenedCollectionSchema = useMemo(() => {
     if (!collectionSchema) return undefined;
@@ -110,9 +113,9 @@ export function DataViewer({
     }
 
     // Best we can do for now with schemaless is to load all attributes from the current set of entities
-    if (!sortedAndFilteredEntities) return attributes;
+    if (!orderedAndFilteredResults) return attributes;
     // otherwise construct a set of all attributes from all entities
-    sortedAndFilteredEntities.forEach(([_id, entity]) => {
+    orderedAndFilteredResults.forEach((entity) => {
       Object.keys(entity).forEach((key: string) => {
         if (!attributes.has(key) && key !== '_collection') {
           attributes.add(key);
@@ -120,17 +123,17 @@ export function DataViewer({
       });
     });
     return attributes;
-  }, [sortedAndFilteredEntities, flattenedCollectionSchema]);
+  }, [orderedAndFilteredResults, flattenedCollectionSchema]);
 
   const allVisibleEntitiesAreSelected = useMemo(() => {
     if (!selectedEntities || selectedEntities.size === 0) return false;
-    const allVisibleEntities = new Set(
-      sortedAndFilteredEntities.map(([id]) => id)
+    const allVisibleEntities = new Set<string>(
+      orderedAndFilteredResults?.map((e) => e.id as string)
     );
     return Array.from(allVisibleEntities).every((id) =>
       selectedEntities.has(id)
     );
-  }, [sortedAndFilteredEntities, selectedEntities]);
+  }, [orderedAndFilteredResults, selectedEntities]);
 
   function onDeselectAllEntities() {
     setSelectedEntities(new Set());
@@ -153,7 +156,9 @@ export function DataViewer({
   }
 
   function onSelectAllEntities() {
-    setSelectedEntities(new Set(sortedAndFilteredEntities.map(([id]) => id)));
+    setSelectedEntities(
+      new Set(orderedAndFilteredResults?.map((e) => e.id as string))
+    );
   }
 
   function toggleSelectAllEntities() {
@@ -176,9 +181,20 @@ export function DataViewer({
           <TriplitColumnHeader attribute="id">
             {selectedEntities && selectedEntities.size > 0 && (
               <DeleteEntitiesDialog
+                permissions={collectionSchema?.permissions}
                 entityIds={[...selectedEntities.keys()]}
                 collectionName={selectedCollection}
                 client={client}
+                onDialogConfirm={async () => {
+                  await client.transact(async (tx) => {
+                    await Promise.all(
+                      Array.from(selectedEntities).map((id) =>
+                        tx.delete(selectedCollection, id)
+                      )
+                    );
+                  });
+                  setSelectedEntities(new Set());
+                }}
               />
             )}
           </TriplitColumnHeader>
@@ -239,18 +255,35 @@ export function DataViewer({
                   queryDef={typeDef}
                   onClickRelationLink={() => {
                     const where = typeDef?.query?.where;
-                    const whereWithVariablesReplaced = where?.map(
-                      ([attribute, operator, value]) => {
-                        let parsedVal = value;
-                        if (typeof value === 'string' && value.startsWith('$'))
-                          parsedVal = row.getValue(
-                            value.split('$')[1] as string
-                          );
-                        if (parsedVal instanceof Set)
-                          parsedVal = Array.from(parsedVal);
-                        return [attribute, operator, parsedVal];
-                      }
-                    );
+                    let whereWithVariablesReplaced = where;
+                    try {
+                      whereWithVariablesReplaced = where?.map(
+                        ([attribute, operator, value]) => {
+                          let parsedVal = value;
+                          if (isValueVariable(value)) {
+                            const [scope, key] = getVariableComponents(value);
+                            if (scope === undefined || scope === '1') {
+                              parsedVal = row.getValue(key);
+                            } else {
+                              throw new TriplitError(
+                                `${value} could not be handled in the filter [${attribute}, ${operator}, ${value}]. Only variables with the \'$1\' scope are supported.`
+                              );
+                            }
+                          }
+                          if (parsedVal instanceof Set)
+                            parsedVal = Array.from(parsedVal);
+                          return [attribute, operator, parsedVal];
+                        }
+                      );
+                    } catch (e) {
+                      if (e instanceof TriplitError)
+                        toast({
+                          title: 'Error',
+                          description: e.contextMessage,
+                          variant: 'destructive',
+                        });
+                      return;
+                    }
                     setQuery({
                       where: whereWithVariablesReplaced,
                       collection: typeDef?.query?.collectionName,
@@ -270,6 +303,7 @@ export function DataViewer({
                 client={client}
                 value={row.getValue(attr)}
                 optional={isOptional}
+                permissions={collectionSchema?.permissions}
               />
             );
           },
@@ -360,16 +394,15 @@ export function DataViewer({
   }
 
   const flatFilteredEntities = useMemo(() => {
-    const flattened = sortedAndFilteredEntities.map(([id, entity]) => ({
-      id,
+    const flattened = orderedAndFilteredResults?.map((entity) => ({
+      id: entity.id,
       ...flattenEntity(entity),
     }));
-    // console.log({ flattened });
     return flattened;
-  }, [sortedAndFilteredEntities]);
+  }, [orderedAndFilteredResults]);
 
   return (
-    <div className="flex flex-col max-w-full items-start h-screen overflow-hidden">
+    <div className="flex flex-col max-w-full items-start h-full overflow-hidden">
       {flattenedCollectionSchema && (
         <>
           <SchemaAttributeSheet
@@ -417,7 +450,7 @@ export function DataViewer({
           />
         </>
       )}
-      <h3 className="px-4 mt-5 mb-1 text-2xl font-semibold tracking-tight flex flex-row gap-2">
+      {/* <h3 className="px-4 mt-5 mb-1 text-2xl font-semibold tracking-tight flex flex-row gap-2">
         {selectedCollection}
         {schema && (
           <CollectionMenu
@@ -430,8 +463,10 @@ export function DataViewer({
             }}
           />
         )}
-      </h3>
+      </h3> */}
       <div className="flex flex-row gap-4 p-4 items-center">
+        <span className="text-lg font-bold">{selectedCollection}</span>
+
         <FiltersPopover
           filters={filters}
           uniqueAttributes={uniqueAttributes}
@@ -440,6 +475,7 @@ export function DataViewer({
           onSubmit={(filters) => {
             setQuery({ where: filters });
           }}
+          client={client}
         />
         <OrderPopover
           uniqueAttributes={uniqueAttributes}
@@ -450,13 +486,6 @@ export function DataViewer({
             setQuery({ order });
           }}
         />
-        <div className="text-sm px-2">{`Showing ${
-          sortedAndFilteredEntities.length
-        }${
-          stats && !filters?.length
-            ? ` of ${parseTotalEstimate(stats.numEntities)}`
-            : ''
-        } entities`}</div>
 
         <CreateEntitySheet
           key={selectedCollection}
@@ -466,15 +495,36 @@ export function DataViewer({
           client={client}
         />
       </div>
-      <DataTable
-        columns={columns}
-        data={flatFilteredEntities}
-        showLoadMore={hasMore}
-        loadMoreDisabled={fetchingMore || !hasMore}
-        onLoadMore={() => {
-          loadMore();
-        }}
-      />
+      <div className="relative overflow-auto max-w-full h-full w-full">
+        <DataTable columns={columns} data={flatFilteredEntities ?? []} />
+      </div>
+      <div className="flex flex-row gap-7 items-center p-2 pl-4 text-xs text-muted-foreground">
+        {!!orderedAndFilteredResults && (
+          <div className="whitespace-nowrap">{`Showing ${
+            orderedAndFilteredResults.length
+          }
+          ${
+            stats && !filters?.length
+              ? ` of ${parseTotalEstimate(stats.numEntities)}`
+              : ''
+          } entities`}</div>
+        )}
+        <div className="flex flex-row gap-1 items-center">
+          <div>Load more:</div>
+          {LOAD_MORE_OPTIONS.map((option) => (
+            <Button
+              variant={'secondary'}
+              className="h-auto py-1 text-xs px-1.5"
+              onClick={() => {
+                loadMore(option);
+              }}
+              disabled={!hasMore || fetchingMore}
+            >
+              {String(option)}
+            </Button>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

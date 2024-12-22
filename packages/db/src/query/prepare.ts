@@ -1,6 +1,15 @@
-import { bumpSubqueryVar } from '../collection-query.js';
-import { DataType } from '../data-types/base.js';
-import { appendCollectionToId, isValueVariable } from '../db-helpers.js';
+import {
+  bumpSubqueryVar,
+  isQueryInclusionReference,
+  isQueryInclusionShorthand,
+  isQueryInclusionSubquery,
+} from '../collection-query.js';
+import { DataType } from '../data-types/types/index.js';
+import {
+  appendCollectionToId,
+  isValueVariable,
+  replaceVariablesInFilterStatements,
+} from '../db-helpers.js';
 import { CollectionFromModels, CollectionNameFromModels } from '../db.js';
 import {
   IncludedNonRelationError,
@@ -13,11 +22,13 @@ import {
   TriplitError,
 } from '../errors.js';
 import {
+  and,
   exists,
   isBooleanFilter,
   isExistsFilter,
   isFilterGroup,
   isSubQueryFilter,
+  or,
 } from '../query.js';
 import {
   getCollectionPermissions,
@@ -27,13 +38,12 @@ import {
   createSchemaTraverser,
   getAttributeFromSchema,
 } from '../schema/schema.js';
-import { Models } from '../schema/types';
+import { Models } from '../schema/types/index.js';
 import {
   CollectionQuery,
   FilterStatement,
-  GenericCollectionQuery,
   QueryWhere,
-  RelationSubquery,
+  RefQueryExtension,
   RelationshipExistsFilter,
   SubQueryFilter,
   WhereFilter,
@@ -41,6 +51,7 @@ import {
 
 export interface QueryPreparationOptions {
   skipRules?: boolean;
+  bindSessionVariables?: boolean;
 }
 
 interface Session {
@@ -49,15 +60,15 @@ interface Session {
 
 // At some point it would be good to have a clear pipeline of data shapes for query builder -> query json -> query the execution engine reads
 // Ex. things like .entityId are more sugar for users than valid values used by the execution engine
-export function prepareQuery<
-  M extends Models<any, any> | undefined,
-  Q extends CollectionQuery<M, any>
->(
+export function prepareQuery<M extends Models, Q extends CollectionQuery<M>>(
   query: Q,
-  schema: M,
+  schema: M | undefined,
   session: Session,
-  options: QueryPreparationOptions = {}
-) {
+  options: QueryPreparationOptions = {
+    skipRules: false,
+    bindSessionVariables: false,
+  }
+): Q {
   let fetchQuery = { ...query };
 
   // Validate collection name
@@ -89,10 +100,11 @@ export function prepareQuery<
   };
 }
 
-function getQuerySelects<
-  M extends Models<any, any> | undefined,
-  Q extends CollectionQuery<M, any>
->(query: Q, schema: M, _options: QueryPreparationOptions) {
+function getQuerySelects<M extends Models, Q extends CollectionQuery<M>>(
+  query: Q,
+  schema: M | undefined,
+  _options: QueryPreparationOptions
+) {
   // If undefined, treat as select all
   if (!query.select) return query.select as undefined;
 
@@ -120,7 +132,7 @@ function getQuerySelects<
     );
     if (!valid) {
       throw new InvalidSelectClauseError(
-        `Select field ${select} is not valid: ${reason} at path ${path}`
+        `Select field '${select}' is not valid: ${reason} at path '${path}'`
       );
     }
   }
@@ -132,10 +144,10 @@ function isSystemCollection(collectionName: string) {
   return collectionName === '_metadata';
 }
 
-function validateCollectionName<
-  M extends Models<any, any> | undefined,
-  Q extends CollectionQuery<M, any>
->(query: Q, schema: M) {
+function validateCollectionName<M extends Models, Q extends CollectionQuery<M>>(
+  query: Q,
+  schema: M | undefined
+) {
   const collectionName = query.collectionName;
   const isString = typeof collectionName === 'string';
   if (!isString)
@@ -152,19 +164,42 @@ function validateCollectionName<
   }
 }
 
-function getQueryInclude<
-  M extends Models<any, any> | undefined,
-  Q extends GenericCollectionQuery<M, any>
->(query: Q, schema: M, session: Session, options: QueryPreparationOptions) {
+function getQueryInclude<M extends Models, Q extends CollectionQuery<M>>(
+  query: Q,
+  schema: M | undefined,
+  session: Session,
+  options: QueryPreparationOptions
+) {
   if (!schema) return query.include;
   if (!query.include) return query.include;
   //   addSubsSelectsFromIncludes(query, schema);
   const inclusions: any = {}; // TODO: type this
-  for (const [relationName, relation] of Object.entries(query.include)) {
+  for (const [alias, relation] of Object.entries(query.include)) {
     // We have already prepared this statement
-    if (relation?.subquery) {
-      inclusions[relationName] = relation;
+    if (isQueryInclusionSubquery(relation)) {
+      inclusions[alias] = {
+        subquery: prepareQuery(
+          relation.subquery,
+          schema as M,
+          session,
+          options
+        ),
+        cardinality: relation.cardinality,
+      };
       continue;
+    }
+
+    let relationName: string;
+    let additionalQuery: RefQueryExtension<M> | null;
+    if (isQueryInclusionReference(relation)) {
+      const { _rel, ...queryExt } = relation;
+      relationName = _rel;
+      additionalQuery = queryExt as RefQueryExtension<M>;
+    } else if (isQueryInclusionShorthand(relation)) {
+      relationName = alias;
+      additionalQuery = null;
+    } else {
+      throw new TriplitError('Invalid inclusion format');
     }
 
     const attributeType = getAttributeFromSchema(
@@ -174,35 +209,43 @@ function getQueryInclude<
     );
 
     if (attributeType && attributeType.type === 'query') {
-      // @ts-expect-error this is improperly typed because we dont differentiate between a user query and prepared query
-      let additionalQuery = relation as CollectionQuery<M, any>;
-      const merged = mergeQueries({ ...attributeType.query }, additionalQuery);
+      const merged = mergeQueries<M>(
+        { ...attributeType.query },
+        // @ts-expect-error this is improperly typed because RefQueryExtension is a subset of CollectionQuery
+        additionalQuery
+      );
       const subquerySelection = {
-        subquery: prepareQuery(merged, schema, session, options),
+        subquery: prepareQuery(merged, schema as M, session, options),
         cardinality: attributeType.cardinality,
       };
-      inclusions[relationName] = subquerySelection;
+      inclusions[alias] = subquerySelection;
       //   query.include = { ...query.include, [relationName]: subquerySelection };
     } else {
       if (!attributeType) {
-        throw new RelationDoesNotExistError(relationName, query.collectionName);
+        throw new RelationDoesNotExistError(
+          relationName,
+          alias,
+          query.collectionName
+        );
       }
-      throw new IncludedNonRelationError(relationName, query.collectionName);
+
+      throw new IncludedNonRelationError(
+        relationName,
+        alias,
+        query.collectionName
+      );
     }
   }
   return inclusions;
 }
 
-function getQueryFilters<
-  M extends Models<any, any> | undefined,
-  Q extends CollectionQuery<M, any>
->(
+function getQueryFilters<M extends Models, Q extends CollectionQuery<M>>(
   query: Q,
-  schema: M,
+  schema: M | undefined,
   session: Session,
   options: QueryPreparationOptions
-): QueryWhere<M, any> {
-  const filters: QueryWhere<M, any> = query.where ? [...query.where] : [];
+): QueryWhere<M> {
+  const filters: QueryWhere<M> = query.where ? [...query.where] : [];
 
   // Translate entityId helper to where clause filter
   if (query.entityId) {
@@ -219,11 +262,19 @@ function getQueryFilters<
   ) {
     // Old permission system
     const ruleFilters = getReadRuleFilters(schema, query.collectionName);
-    if (ruleFilters?.length > 0)
+    if (ruleFilters?.length > 0) {
       filters.push(
         // @ts-expect-error
-        ...ruleFilters
+        ...(options.bindSessionVariables
+          ? replaceVariablesInFilterStatements(ruleFilters, {
+              // @ts-expect-error
+              ...session.session,
+              // @ts-expect-error
+              session: session.session,
+            })
+          : ruleFilters)
       );
+    }
 
     // New permission system
     const collectionPermissions = getCollectionPermissions(
@@ -232,7 +283,7 @@ function getQueryFilters<
     );
     // If we have collection permissions, we should apply them, otherwise its permissionless
     if (collectionPermissions) {
-      let permissionFilters: QueryWhere<M, any> = [];
+      let permissionFilters: QueryWhere<any, any>[] = [];
       let hasMatch = false;
       if (session.roles) {
         for (const sessionRole of session.roles) {
@@ -243,101 +294,100 @@ function getQueryFilters<
             // TODO: handle empty arrays
             if (Array.isArray(permission.filter)) {
               permissionFilters.push(
-                // @ts-expect-error
-                ...permission.filter
+                options.bindSessionVariables
+                  ? replaceVariablesInFilterStatements(permission.filter, {
+                      role: sessionRole.roleVars,
+                    })
+                  : permission.filter
               );
             }
           }
         }
       }
-      if (!hasMatch) permissionFilters = [false];
-      filters.push(...permissionFilters);
+      if (!hasMatch) permissionFilters = [[false]];
+      const permissionsWhere = or(permissionFilters.map((f) => and(f)));
+      filters.push(permissionsWhere);
     }
   }
 
   const whereValidator = whereFilterValidator(schema, query.collectionName);
-  return mapFilterStatements(
-    filters,
-    // @ts-expect-error
-    (statement) => {
-      // Validate filter
-      whereValidator(statement);
-      // Turn exists filter into a subquery
-      if (isExistsFilter(statement)) {
-        const { relationship, query: statementQuery } = statement;
-        if (!schema)
-          throw new InvalidFilterError(
-            'A schema is required to execute an exists filter'
-          );
-
-        const relationshipPath = relationship.split('.');
-        const [first, ...rest] = relationshipPath;
-        const isPropertyNested = rest.length > 0;
-        const attributeType = getAttributeFromSchema(
-          [first],
-          schema,
-          query.collectionName
+  return mapFilterStatements(filters, (statement) => {
+    // Validate filter
+    whereValidator(statement);
+    // Turn exists filter into a subquery
+    if (isExistsFilter(statement)) {
+      const { relationship, query: statementQuery } = statement;
+      if (!schema)
+        throw new InvalidFilterError(
+          'A schema is required to execute an exists filter'
         );
-        if (!attributeType)
-          throw new InvalidFilterError(
-            `Could not find property '${relationship}' in the schema`
-          );
 
-        if (attributeType.type !== 'query')
-          throw new InvalidFilterError(
-            'Cannot execute an exists filter on a non-relation property'
-          );
+      const relationshipPath = relationship.split('.');
+      const [first, ...rest] = relationshipPath;
+      const isPropertyNested = rest.length > 0;
+      const attributeType = getAttributeFromSchema(
+        [first],
+        schema,
+        query.collectionName
+      );
+      if (!attributeType)
+        throw new InvalidFilterError(
+          `Could not find property '${relationship}' in the schema`
+        );
 
+      if (attributeType.type !== 'query')
+        throw new InvalidFilterError(
+          'Cannot execute an exists filter on a non-relation property'
+        );
+
+      const subquery = { ...attributeType.query };
+
+      // If property is nested, create a new exists filter for the subquery
+      const filterToAdd = isPropertyNested
+        ? [exists(rest.join('.') as string as any, statementQuery)]
+        : statementQuery?.where;
+
+      subquery.where = [
+        ...(attributeType.query.where ?? []),
+        ...(filterToAdd ?? []),
+      ];
+
+      return {
+        exists: prepareQuery(subquery, schema, session, options),
+      };
+    }
+    if (!Array.isArray(statement)) return statement;
+
+    // Expand subquery statements
+    let [prop, op, val] = statement;
+    if (schema && !isSystemCollection(query.collectionName)) {
+      // Validation should handle this existing
+      const attributeType = getAttributeFromSchema(
+        [(prop as string).split('.')[0]], // TODO: properly handle query in record...
+        schema,
+        query.collectionName
+      )!;
+      if (attributeType.type === 'query') {
+        const [_collectionName, ...path] = (prop as string).split('.');
         const subquery = { ...attributeType.query };
-
-        // If property is nested, create a new exists filter for the subquery
-        const filterToAdd = isPropertyNested
-          ? [exists(rest.join('.') as string as any, statementQuery)]
-          : statementQuery?.where;
-
-        subquery.where = [
-          ...(attributeType.query.where ?? []),
-          ...(filterToAdd ?? []),
-        ];
-
+        // As we expand subqueries, "bump" the variable names
+        if (isValueVariable(val)) {
+          val = '$' + bumpSubqueryVar(val.slice(1));
+        }
+        subquery.where = [...subquery.where, [path.join('.'), op, val]];
         return {
           exists: prepareQuery(subquery, schema, session, options),
         };
       }
-      if (!Array.isArray(statement)) return statement;
-
-      // Expand subquery statements
-      let [prop, op, val] = statement;
-      if (schema && !isSystemCollection(query.collectionName)) {
-        // Validation should handle this existing
-        const attributeType = getAttributeFromSchema(
-          [(prop as string).split('.')[0]], // TODO: properly handle query in record...
-          schema,
-          query.collectionName
-        )!;
-        if (attributeType.type === 'query') {
-          const [_collectionName, ...path] = (prop as string).split('.');
-          const subquery = { ...attributeType.query };
-          // As we expand subqueries, "bump" the variable names
-          if (isValueVariable(val)) {
-            // @ts-expect-error
-            val = '$' + bumpSubqueryVar(val.slice(1));
-          }
-          subquery.where = [...subquery.where, [path.join('.'), op, val]];
-          return {
-            exists: prepareQuery(subquery, schema, session, options),
-          };
-        }
-      }
-      // TODO: should be integrated into type system
-      return [prop, op, val instanceof Date ? val.toISOString() : val];
     }
-  );
+    // TODO: should be integrated into type system
+    return [prop, op, val instanceof Date ? val.toISOString() : val];
+  });
 }
 
 function getReadRuleFilters(
-  schema: Models<any, any>,
-  collectionName: CollectionFromModels<any, any>
+  schema: Models,
+  collectionName: CollectionNameFromModels
 ): QueryWhere<any, any> {
   if (schema?.[collectionName]?.rules?.read)
     return Object.values(schema[collectionName].rules?.read ?? {}).flatMap(
@@ -347,10 +397,11 @@ function getReadRuleFilters(
   return [];
 }
 
-function getQueryOrder<
-  M extends Models<any, any> | undefined,
-  Q extends CollectionQuery<M, any>
->(query: Q, schema: M, _options: QueryPreparationOptions) {
+function getQueryOrder<M extends Models, Q extends CollectionQuery<M>>(
+  query: Q,
+  schema: M | undefined,
+  _options: QueryPreparationOptions
+) {
   if (!query.order) return query.order as undefined;
   if (!schema) return [...query.order];
   // Validate that the order by fields exist and are sortable
@@ -383,17 +434,18 @@ function getQueryOrder<
     );
     if (!valid) {
       throw new InvalidOrderClauseError(
-        `Order by field ${field} is not valid: ${reason} at path ${path}`
+        `Order by field '${field}' is not valid: ${reason} at path '${path}'`
       );
     }
   }
   return [...query.order];
 }
 
-function getQueryAfter<
-  M extends Models<any, any> | undefined,
-  Q extends CollectionQuery<M, any>
->(query: Q, _schema: M, _options: QueryPreparationOptions) {
+function getQueryAfter<M extends Models, Q extends CollectionQuery<M>>(
+  query: Q,
+  _schema: M | undefined,
+  _options: QueryPreparationOptions
+) {
   if (!query.after) return query.after as undefined;
   if (!query.order || query.order.length === 0) {
     // TODO: make more specific
@@ -415,10 +467,13 @@ function getQueryAfter<
   return after;
 }
 
-function whereFilterValidator<M extends Models<any, any> | undefined>(
-  schema: M,
-  collectionName: string
-): (filter: WhereFilter<M, any>) => boolean {
+function whereFilterValidator<
+  M extends Models,
+  CN extends CollectionNameFromModels<M>,
+>(
+  schema: M | undefined,
+  collectionName: CN
+): (filter: WhereFilter<M, CN>) => boolean {
   return (statement) => {
     // TODO: add helper function to determine when we should(n't) schema check (ie schemaless and _metadata)
     if (!schema) return true;
@@ -433,7 +488,7 @@ function whereFilterValidator<M extends Models<any, any> | undefined>(
     const { valid, path, reason } = validateIdentifier(
       prop,
       schema,
-      collectionName as CollectionNameFromModels<NonNullable<M>>,
+      collectionName,
       (dataType, i, path) => {
         if (!dataType) return { valid: false, reason: 'Path not found' };
         // TODO: check if operator is valid for the type and use that to determine if it's valid
@@ -455,14 +510,14 @@ function whereFilterValidator<M extends Models<any, any> | undefined>(
           prop,
           op,
           val,
-        ])} is not valid: ${reason} at path ${path}`
+        ])} is not valid: ${reason} at path '${path}'`
       );
     }
     return true;
   };
 }
 
-function mergeQueries<M extends Models<any, any> | undefined>(
+function mergeQueries<M extends Models>(
   queryA: CollectionQuery<M, any>,
   queryB?: CollectionQuery<M, any>
 ) {
@@ -479,26 +534,27 @@ function mergeQueries<M extends Models<any, any> | undefined>(
 }
 
 function mapFilterStatements<
-  M extends Models<any, any> | undefined,
-  CN extends CollectionNameFromModels<M>
+  M extends Models,
+  CN extends CollectionNameFromModels<M>,
 >(
   statements: QueryWhere<M, CN>,
   mapFunction: (
     statement:
       | FilterStatement<M, CN>
-      | SubQueryFilter
+      | SubQueryFilter<M>
       | RelationshipExistsFilter<M, CN>
       | boolean
   ) =>
     | FilterStatement<M, CN>
-    | SubQueryFilter
+    | SubQueryFilter<M>
     | RelationshipExistsFilter<M, CN>
     | boolean
 ): QueryWhere<M, CN> {
   return statements.map((statement) => {
     if (isFilterGroup(statement)) {
-      statement.filters = mapFilterStatements(statement.filters, mapFunction);
-      return statement;
+      const group = { ...statement };
+      group.filters = mapFilterStatements(group.filters, mapFunction);
+      return group;
     }
     return mapFunction(statement);
   });
@@ -508,8 +564,8 @@ function mapFilterStatements<
  * Validates an identifier path based on a validator function. The validator function is called for each part of the path.
  */
 function validateIdentifier<
-  M extends Models<any, any>,
-  CN extends CollectionNameFromModels<M>
+  M extends Models,
+  CN extends CollectionNameFromModels<M>,
 >(
   identifier: string,
   schema: M,

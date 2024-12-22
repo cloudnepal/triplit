@@ -1,5 +1,462 @@
 # @triplit/console
 
+## 0.4.30
+
+### Patch Changes
+
+- Updated dependencies [6d348d3d]
+  - @triplit/db@0.5.19
+  - @triplit/client@0.6.12
+  - @triplit/react@0.4.30
+
+## 0.4.29
+
+### Patch Changes
+
+- Updated dependencies [398da292]
+  - @triplit/db@0.5.18
+  - @triplit/client@0.6.11
+  - @triplit/react@0.4.29
+
+## 0.4.28
+
+### Patch Changes
+
+- Updated dependencies [a80dbe04]
+  - @triplit/db@0.5.17
+  - @triplit/client@0.6.10
+  - @triplit/react@0.4.28
+
+## 0.4.27
+
+### Patch Changes
+
+- Updated dependencies [4ccc6422]
+  - @triplit/client@0.6.9
+  - @triplit/db@0.5.16
+  - @triplit/react@0.4.27
+
+## 0.4.26
+
+### Patch Changes
+
+- Updated dependencies [f3186500]
+- Updated dependencies [e5ff046f]
+  - @triplit/db@0.5.15
+  - @triplit/client@0.6.8
+  - @triplit/react@0.4.26
+
+## 0.4.25
+
+### Patch Changes
+
+- Updated dependencies [b2b3eae5]
+  - @triplit/db@0.5.14
+  - @triplit/client@0.6.7
+  - @triplit/react@0.4.25
+
+## 0.4.24
+
+### Patch Changes
+
+- Updated dependencies [7bbc8e53]
+  - @triplit/db@0.5.13
+  - @triplit/client@0.6.6
+  - @triplit/react@0.4.24
+
+## 0.4.23
+
+### Patch Changes
+
+- Updated dependencies [bb973df7]
+  - @triplit/db@0.5.12
+  - @triplit/client@0.6.5
+  - @triplit/react@0.4.23
+
+## 0.4.22
+
+### Patch Changes
+
+- Updated dependencies [6de9aaf4]
+  - @triplit/client@0.6.4
+  - @triplit/react@0.4.22
+
+## 0.4.21
+
+### Patch Changes
+
+- Updated dependencies [483c84b6]
+  - @triplit/client@0.6.3
+  - @triplit/react@0.4.21
+
+## 0.4.20
+
+### Patch Changes
+
+- Updated dependencies [2541c6e2]
+- Updated dependencies [8e9511dc]
+- Updated dependencies [a2532548]
+  - @triplit/client@0.6.2
+  - @triplit/db@0.5.11
+  - @triplit/react@0.4.20
+
+## 0.4.19
+
+### Patch Changes
+
+- Updated dependencies [a0932216]
+  - @triplit/db@0.5.10
+  - @triplit/client@0.6.1
+  - @triplit/react@0.4.19
+
+## 0.4.18
+
+### Patch Changes
+
+- Updated dependencies [2713ca43]
+- Updated dependencies [2713ca43]
+  - @triplit/db@0.5.9
+  - @triplit/client@0.6.0
+  - @triplit/react@0.4.18
+
+## 0.4.17
+
+### Patch Changes
+
+- Updated dependencies [bdebed22]
+- Updated dependencies [f1ce9675]
+- Updated dependencies [74854d68]
+- Updated dependencies [7b1839b6]
+  - @triplit/db@0.5.8
+  - @triplit/client@0.5.17
+  - @triplit/react@0.4.17
+
+## 0.4.16
+
+### Patch Changes
+
+- Updated dependencies [9107e262]
+- Updated dependencies [0cc53c85]
+- Updated dependencies [cb785390]
+  - @triplit/db@0.5.7
+  - @triplit/client@0.5.16
+  - @triplit/react@0.4.16
+
+## 0.4.15
+
+### Patch Changes
+
+- Updated dependencies [dd8278d1]
+  - @triplit/db@0.5.6
+  - @triplit/client@0.5.15
+  - @triplit/react@0.4.15
+
+## 0.4.14
+
+### Patch Changes
+
+- Updated dependencies [8f004df6]
+  - @triplit/db@0.5.5
+  - @triplit/client@0.5.14
+  - @triplit/react@0.4.14
+
+## 0.4.13
+
+### Patch Changes
+
+- Updated dependencies [bdd50e7f]
+  - @triplit/client@0.5.13
+  - @triplit/react@0.4.13
+
+## 0.4.12
+
+### Patch Changes
+
+- Updated dependencies [e9eb5c26]
+  - @triplit/db@0.5.4
+  - @triplit/client@0.5.12
+  - @triplit/react@0.4.12
+
+## 0.4.11
+
+### Patch Changes
+
+- Updated dependencies [f201dd5a]
+- Updated dependencies [8c97bfdb]
+- Updated dependencies [57d1e24b]
+  - @triplit/db@0.5.3
+  - @triplit/client@0.5.11
+  - @triplit/react@0.4.11
+
+## 0.4.10
+
+### Patch Changes
+
+- Updated dependencies [3d5e879d]
+- Updated dependencies [aca9cf75]
+- Updated dependencies [3d5e879d]
+  - @triplit/client@0.5.10
+  - @triplit/db@0.5.2
+  - @triplit/react@0.4.10
+
+## 0.4.9
+
+### Patch Changes
+
+- @triplit/db@0.5.1
+- @triplit/client@0.5.9
+- @triplit/react@0.4.9
+
+## 0.4.8
+
+### Patch Changes
+
+- Updated dependencies [3984bc94]
+- Updated dependencies [d1ceedcb]
+- Updated dependencies [ccfa038c]
+- Updated dependencies [94417d39]
+  - @triplit/db@0.5.0
+  - @triplit/react@0.4.8
+  - @triplit/client@0.5.8
+
+## 0.4.7
+
+### Patch Changes
+
+- Updated dependencies [15815dc2]
+- Updated dependencies [23b6171d]
+  - @triplit/db@0.4.6
+  - @triplit/client@0.5.7
+  - @triplit/react@0.4.7
+
+## 0.4.6
+
+### Patch Changes
+
+- Updated dependencies [3ca5265f]
+  - @triplit/client@0.5.6
+  - @triplit/react@0.4.6
+
+## 0.4.5
+
+### Patch Changes
+
+- Updated dependencies [c9fde067]
+- Updated dependencies [16687b5a]
+- Updated dependencies [c9fde067]
+  - @triplit/db@0.4.5
+  - @triplit/client@0.5.5
+  - @triplit/react@0.4.5
+
+## 0.4.4
+
+### Patch Changes
+
+- Updated dependencies [f7ab3c65]
+  - @triplit/db@0.4.4
+  - @triplit/client@0.5.4
+  - @triplit/react@0.4.4
+
+## 0.4.3
+
+### Patch Changes
+
+- 3e96117b: rm logs
+- Updated dependencies [80a1d44b]
+  - @triplit/db@0.4.3
+  - @triplit/client@0.5.3
+  - @triplit/react@0.4.3
+
+## 0.4.2
+
+### Patch Changes
+
+- Updated dependencies [3feda93e]
+- Updated dependencies [c0365bd9]
+- Updated dependencies [5305bc0f]
+  - @triplit/client@0.5.2
+  - @triplit/db@0.4.2
+  - @triplit/react@0.4.2
+
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [8966b0fe]
+- Updated dependencies [761648cf]
+- Updated dependencies [761648cf]
+  - @triplit/db@0.4.1
+  - @triplit/client@0.5.1
+  - @triplit/react@0.4.1
+
+## 0.4.0
+
+### Minor Changes
+
+- f894e435: update query return type to array
+
+### Patch Changes
+
+- Updated dependencies [0a09013b]
+- Updated dependencies [38746526]
+- Updated dependencies [f894e435]
+- Updated dependencies [abe8bea8]
+- Updated dependencies [38746526]
+- Updated dependencies [abe8bea8]
+  - @triplit/client@0.5.0
+  - @triplit/db@0.4.0
+  - @triplit/react@0.4.0
+
+## 0.3.104
+
+### Patch Changes
+
+- Updated dependencies [5fed7f42]
+- Updated dependencies [3c7fd004]
+  - @triplit/db@0.3.75
+  - @triplit/client@0.4.13
+  - @triplit/react@0.3.102
+
+## 0.3.103
+
+### Patch Changes
+
+- Updated dependencies [5eae93dc]
+- Updated dependencies [5eae93dc]
+  - @triplit/react@0.3.101
+  - @triplit/db@0.3.74
+  - @triplit/client@0.4.12
+
+## 0.3.102
+
+### Patch Changes
+
+- Updated dependencies [9a123967]
+- Updated dependencies [99a5b854]
+  - @triplit/react@0.3.100
+  - @triplit/db@0.3.73
+  - @triplit/client@0.4.11
+
+## 0.3.101
+
+### Patch Changes
+
+- @triplit/db@0.3.72
+- @triplit/client@0.4.10
+- @triplit/react@0.3.99
+
+## 0.3.100
+
+### Patch Changes
+
+- Updated dependencies [4f99c558]
+- Updated dependencies [a902f8b8]
+  - @triplit/db@0.3.71
+  - @triplit/client@0.4.9
+  - @triplit/react@0.3.98
+
+## 0.3.99
+
+### Patch Changes
+
+- Updated dependencies [7ea2a0a9]
+  - @triplit/client@0.4.8
+  - @triplit/react@0.3.97
+
+## 0.3.98
+
+### Patch Changes
+
+- 833b69c9: better handle relations with variables
+- Updated dependencies [104027d8]
+- Updated dependencies [59d9c3bc]
+- Updated dependencies [b5374280]
+- Updated dependencies [22b3e245]
+- Updated dependencies [833b69c9]
+- Updated dependencies [ecc5a959]
+  - @triplit/db@0.3.70
+  - @triplit/react@0.3.96
+  - @triplit/client@0.4.7
+
+## 0.3.97
+
+### Patch Changes
+
+- a6caa166: simplify token scheme
+- Updated dependencies [96d4d8ff]
+- Updated dependencies [d11d57e2]
+- Updated dependencies [ffb00f68]
+  - @triplit/db@0.3.69
+  - @triplit/client@0.4.6
+  - @triplit/react@0.3.95
+
+## 0.3.96
+
+### Patch Changes
+
+- Updated dependencies [79df5162]
+- Updated dependencies [51cde34e]
+  - @triplit/db@0.3.68
+  - @triplit/client@0.4.5
+  - @triplit/react@0.3.94
+
+## 0.3.95
+
+### Patch Changes
+
+- Updated dependencies [e6e07458]
+  - @triplit/client@0.4.4
+  - @triplit/react@0.3.93
+
+## 0.3.94
+
+### Patch Changes
+
+- Updated dependencies [38bdff77]
+  - @triplit/db@0.3.67
+  - @triplit/client@0.4.3
+  - @triplit/react@0.3.92
+
+## 0.3.93
+
+### Patch Changes
+
+- Updated dependencies [73d638ec]
+- Updated dependencies [bbc64ede]
+- Updated dependencies [12650423]
+- Updated dependencies [bbc64ede]
+  - @triplit/db@0.3.66
+  - @triplit/client@0.4.2
+  - @triplit/react@0.3.91
+
+## 0.3.92
+
+### Patch Changes
+
+- Updated dependencies [28d32b51]
+- Updated dependencies [0139e1a4]
+  - @triplit/db@0.3.65
+  - @triplit/client@0.4.1
+  - @triplit/react@0.3.90
+
+## 0.3.91
+
+### Patch Changes
+
+- Updated dependencies [ba9f0d6c]
+- Updated dependencies [6d249ce2]
+- Updated dependencies [f9470ad1]
+  - @triplit/client@0.4.0
+  - @triplit/react@0.3.89
+
+## 0.3.90
+
+### Patch Changes
+
+- Updated dependencies [9857d9de]
+  - @triplit/client@0.3.84
+  - @triplit/react@0.3.88
+
 ## 0.3.89
 
 ### Patch Changes

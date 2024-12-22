@@ -1,6 +1,7 @@
 import path from 'path';
 import fs, { existsSync, readFileSync } from 'fs';
 import ts from 'typescript';
+import esbuild from 'esbuild';
 
 export function createDirIfNotExists(dir: string) {
   if (!fs.existsSync(dir)) {
@@ -16,14 +17,7 @@ export function getTriplitDir() {
   return TRIPLIT_DIR;
 }
 
-export const MIGRATIONS_DIR = path.join(TRIPLIT_DIR, 'migrations');
-
 export const SEED_DIR = path.join(TRIPLIT_DIR, 'seeds');
-
-export function getMigrationsDir() {
-  createDirIfNotExists(MIGRATIONS_DIR);
-  return MIGRATIONS_DIR;
-}
 
 export function getSeedsDir() {
   createDirIfNotExists(SEED_DIR);
@@ -89,18 +83,34 @@ export async function importFresh(modulePath: string) {
   return await import(cacheBustingModulePath);
 }
 
-export async function loadTsModule(filepath: string) {
+export async function loadTsModule(filepath: string, includeSource = false) {
   if (!filepath.endsWith('.ts')) throw new Error('File must be a .ts file');
   const absolutePath = path.resolve(filepath);
   const dir = path.dirname(absolutePath);
   const filename = path.basename(absolutePath, '.ts');
-  const tmpDir = path.join(dir, 'tmp');
+  const tmpDir = path.join(dir, '.temp');
   const ext = isCallerESM() ? 'js' : 'mjs';
   const transpiledJsPath = path.join(tmpDir, `_${filename}.${ext}`);
   try {
-    if (!fs.existsSync(absolutePath)) return undefined;
-    const transpiledJs = transpileTsFile(absolutePath);
-    return await evalJSString(transpiledJs, { tmpFile: transpiledJsPath });
+    await esbuild.build({
+      entryPoints: [absolutePath],
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      target: 'node16',
+      outfile: transpiledJsPath,
+      sourcemap: 'external',
+      minifyIdentifiers: false,
+      minifyWhitespace: true,
+      minifySyntax: true,
+    });
+    const mod = await importFresh('file:///' + transpiledJsPath);
+    if (!includeSource) {
+      return mod;
+    }
+    const sourceMapPath = transpiledJsPath + '.map';
+    const sourceMap = JSON.parse(fs.readFileSync(sourceMapPath, 'utf8'));
+    return { mod, sourceMap };
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

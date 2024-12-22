@@ -1,5 +1,318 @@
 # @triplit/server-core
 
+## 0.5.22
+
+### Patch Changes
+
+- 6d348d3d: Add `--failOnBackwardsIncompatibleChange` to @triplit/CLI `schema push` command
+- Updated dependencies [6d348d3d]
+  - @triplit/db@0.5.19
+
+## 0.5.21
+
+### Patch Changes
+
+- Updated dependencies [398da292]
+  - @triplit/db@0.5.18
+
+## 0.5.20
+
+### Patch Changes
+
+- Updated dependencies [a80dbe04]
+  - @triplit/db@0.5.17
+
+## 0.5.19
+
+### Patch Changes
+
+- Updated dependencies [4ccc6422]
+  - @triplit/db@0.5.16
+
+## 0.5.18
+
+### Patch Changes
+
+- Updated dependencies [f3186500]
+- Updated dependencies [e5ff046f]
+  - @triplit/db@0.5.15
+
+## 0.5.17
+
+### Patch Changes
+
+- Updated dependencies [b2b3eae5]
+  - @triplit/db@0.5.14
+
+## 0.5.16
+
+### Patch Changes
+
+- Updated dependencies [7bbc8e53]
+  - @triplit/db@0.5.13
+
+## 0.5.15
+
+### Patch Changes
+
+- Updated dependencies [bb973df7]
+  - @triplit/db@0.5.12
+
+## 0.5.14
+
+### Patch Changes
+
+- Updated dependencies [8e9511dc]
+- Updated dependencies [a2532548]
+  - @triplit/db@0.5.11
+
+## 0.5.13
+
+### Patch Changes
+
+- Updated dependencies [a0932216]
+  - @triplit/db@0.5.10
+
+## 0.5.12
+
+### Patch Changes
+
+- 2713ca43: use hono for default node server implmenetation
+- Updated dependencies [2713ca43]
+  - @triplit/db@0.5.9
+
+## 0.5.11
+
+### Patch Changes
+
+- Updated dependencies [bdebed22]
+- Updated dependencies [7b1839b6]
+  - @triplit/db@0.5.8
+
+## 0.5.10
+
+### Patch Changes
+
+- Updated dependencies [9107e262]
+- Updated dependencies [0cc53c85]
+- Updated dependencies [cb785390]
+  - @triplit/db@0.5.7
+
+## 0.5.9
+
+### Patch Changes
+
+- Updated dependencies [dd8278d1]
+  - @triplit/db@0.5.6
+
+## 0.5.8
+
+### Patch Changes
+
+- Updated dependencies [8f004df6]
+  - @triplit/db@0.5.5
+
+## 0.5.7
+
+### Patch Changes
+
+- Updated dependencies [e9eb5c26]
+  - @triplit/db@0.5.4
+
+## 0.5.6
+
+### Patch Changes
+
+- Updated dependencies [f201dd5a]
+- Updated dependencies [8c97bfdb]
+  - @triplit/db@0.5.3
+
+## 0.5.5
+
+### Patch Changes
+
+- Updated dependencies [aca9cf75]
+- Updated dependencies [3d5e879d]
+  - @triplit/db@0.5.2
+
+## 0.5.4
+
+### Patch Changes
+
+- @triplit/db@0.5.1
+
+## 0.5.3
+
+### Patch Changes
+
+- Updated dependencies [3984bc94]
+- Updated dependencies [94417d39]
+  - @triplit/db@0.5.0
+
+## 0.5.2
+
+### Patch Changes
+
+- 23b6171d: add support for webhooks
+- Updated dependencies [15815dc2]
+- Updated dependencies [23b6171d]
+  - @triplit/db@0.4.6
+
+## 0.5.1
+
+### Patch Changes
+
+- deacd21c: handle larger bulk inserts
+
+## 0.5.0
+
+### Minor Changes
+
+- 186174da: Ensure sync connections are cleaned up on disconnect
+
+### Patch Changes
+
+- Updated dependencies [c9fde067]
+  - @triplit/db@0.4.5
+
+## 0.4.4
+
+### Patch Changes
+
+- Updated dependencies [f7ab3c65]
+  - @triplit/db@0.4.4
+
+## 0.4.3
+
+### Patch Changes
+
+- Updated dependencies [80a1d44b]
+  - @triplit/db@0.4.3
+
+## 0.4.2
+
+### Patch Changes
+
+- Updated dependencies [c0365bd9]
+- Updated dependencies [5305bc0f]
+  - @triplit/db@0.4.2
+
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [8966b0fe]
+- Updated dependencies [761648cf]
+  - @triplit/db@0.4.1
+
+## 0.4.0
+
+### Minor Changes
+
+- 0a09013b: Sunset migrations API
+- f894e435: update query return type to array
+
+### Patch Changes
+
+- Updated dependencies [0a09013b]
+- Updated dependencies [38746526]
+- Updated dependencies [f894e435]
+- Updated dependencies [abe8bea8]
+  - @triplit/db@0.4.0
+
+## 0.3.79
+
+### Patch Changes
+
+- Updated dependencies [5fed7f42]
+  - @triplit/db@0.3.75
+
+## 0.3.78
+
+### Patch Changes
+
+- Updated dependencies [5eae93dc]
+  - @triplit/db@0.3.74
+
+## 0.3.77
+
+### Patch Changes
+
+- Updated dependencies [99a5b854]
+  - @triplit/db@0.3.73
+
+## 0.3.76
+
+### Patch Changes
+
+- @triplit/db@0.3.72
+
+## 0.3.75
+
+### Patch Changes
+
+- a902f8b8: unify session variable transformation logic
+- Updated dependencies [4f99c558]
+- Updated dependencies [a902f8b8]
+  - @triplit/db@0.3.71
+
+## 0.3.74
+
+### Patch Changes
+
+- cb72c28c: better errors for failed token verifications
+- b1127b7b: Write scope claim to array on tokens
+
+## 0.3.73
+
+### Patch Changes
+
+- 39183482: Update server-core types
+- Updated dependencies [104027d8]
+- Updated dependencies [833b69c9]
+- Updated dependencies [ecc5a959]
+  - @triplit/db@0.3.70
+
+## 0.3.72
+
+### Patch Changes
+
+- a6caa166: simplify token scheme
+- d11d57e2: Use async generators for tuple scans rather than arrays for lazy pagination of indexes that will reduce memory and increase performance on large datasets
+- Updated dependencies [96d4d8ff]
+- Updated dependencies [d11d57e2]
+- Updated dependencies [ffb00f68]
+  - @triplit/db@0.3.69
+
+## 0.3.71
+
+### Patch Changes
+
+- Updated dependencies [79df5162]
+  - @triplit/db@0.3.68
+
+## 0.3.70
+
+### Patch Changes
+
+- Updated dependencies [38bdff77]
+  - @triplit/db@0.3.67
+
+## 0.3.69
+
+### Patch Changes
+
+- Updated dependencies [73d638ec]
+  - @triplit/db@0.3.66
+
+## 0.3.68
+
+### Patch Changes
+
+- Updated dependencies [28d32b51]
+- Updated dependencies [0139e1a4]
+  - @triplit/db@0.3.65
+
 ## 0.3.67
 
 ### Patch Changes

@@ -1,73 +1,67 @@
+import { ValuePointer } from '@sinclair/typebox/value';
 import {
   FetchExecutionContext,
   FetchFromStorageOptions,
-  QueryPipelineData,
   loadSubquery,
 } from '../collection-query.js';
-import { Operator } from '../data-types/base.js';
-import DB from '../db.js';
 import { InvalidFilterError, QueryNotPreparedError } from '../errors.js';
 import {
-  EntityPointer,
   isBooleanFilter,
   isExistsFilter,
   isFilterGroup,
+  isFilterStatement,
   isSubQueryFilter,
 } from '../query.js';
+import { Entity } from '../entity.js';
 import { getAttributeFromSchema } from '../schema/schema.js';
-import { Models } from '../schema/types';
-import { Timestamp } from '../timestamp.js';
+import { Models } from '../schema/types/index.js';
 import { TripleStoreApi } from '../triple-store.js';
-import { timestampedObjectToPlainObject } from '../utils.js';
 import { everyAsync, someAsync } from '../utils/async.js';
 import {
   FilterStatement,
   SubQueryFilter,
   WhereFilter,
   CollectionQuery,
-} from './types';
+  Operator,
+} from './types/index.js';
 
 /**
  * During query execution, determine if an entity satisfies a filter
  */
-export async function satisfiesFilter<
-  M extends Models<any, any> | undefined,
-  Q extends CollectionQuery<M, any>
->(
-  db: DB<M>,
+export async function satisfiesFilter<Q extends CollectionQuery>(
   tx: TripleStoreApi,
   query: Q,
   executionContext: FetchExecutionContext,
   options: FetchFromStorageOptions,
-  pipelineItem: QueryPipelineData,
-  filter: WhereFilter<M, Q['collectionName']>
+  entityEntry: [entityId: string, entity: Entity],
+  filter: WhereFilter<any, any>
 ): Promise<boolean> {
   if (isBooleanFilter(filter)) return filter;
   if (isFilterGroup(filter)) {
     const { mod, filters } = filter;
     if (mod === 'and') {
-      return await everyAsync(filters, (f) =>
+      const filterOrder = getFilterPriorityOrder(filters);
+      return await everyAsync(filterOrder, (idx) =>
         satisfiesFilter(
-          db,
           tx,
           query,
           executionContext,
           options,
-          pipelineItem,
-          f
+          entityEntry,
+          filters[idx]
         )
       );
     }
     if (mod === 'or') {
-      return await someAsync(filters, (f) =>
+      const filterOrder = getFilterPriorityOrder(filters);
+      return await someAsync(filterOrder, (idx) =>
         satisfiesFilter(
-          db,
           tx,
           query,
           executionContext,
           options,
-          pipelineItem,
-          f
+          entityEntry,
+          filters[idx]
         )
       );
     }
@@ -75,12 +69,11 @@ export async function satisfiesFilter<
   }
   if (isSubQueryFilter(filter)) {
     return await satisfiesRelationalFilter(
-      db,
       tx,
       query,
       executionContext,
       options,
-      pipelineItem,
+      entityEntry,
       filter
     );
   }
@@ -91,20 +84,19 @@ export async function satisfiesFilter<
     throw new QueryNotPreparedError('Untranslated exists filter');
   }
 
-  return satisfiesFilterStatement(query, options, pipelineItem, filter);
+  return satisfiesFilterStatement(query, options, entityEntry[1], filter);
 }
 
 async function satisfiesRelationalFilter<
-  M extends Models<any, any> | undefined,
-  Q extends CollectionQuery<M, any>
+  M extends Models,
+  Q extends CollectionQuery<M, any>,
 >(
-  db: DB<M>,
   tx: TripleStoreApi,
   query: Q,
   executionContext: FetchExecutionContext,
   options: FetchFromStorageOptions,
-  pipelineItem: QueryPipelineData,
-  filter: SubQueryFilter
+  entityEntry: [entityId: string, entity: Entity],
+  filter: SubQueryFilter<M, Q['collectionName']>
 ) {
   const { exists: subQuery } = filter;
   const existsSubQuery = {
@@ -112,125 +104,76 @@ async function satisfiesRelationalFilter<
     limit: 1,
   };
 
-  const { results: subQueryResult, triples } = await loadSubquery(
-    db,
+  const subQueryResult = await loadSubquery(
     tx,
     query,
     existsSubQuery,
     'one',
     executionContext,
     options,
-    pipelineItem.entity
+    'exists',
+    entityEntry
   );
-  const exists = !!subQueryResult;
-  if (!exists) return false;
-  for (const tripleSet of triples.values()) {
-    for (const triple of tripleSet) {
-      pipelineItem.existsFilterTriples.push(triple);
-    }
-  }
 
-  return true;
+  if (subQueryResult) executionContext.fulfillmentEntities.add(subQueryResult);
+  return !!subQueryResult;
 }
 
 function satisfiesFilterStatement<
-  M extends Models<any, any> | undefined,
-  Q extends CollectionQuery<M, any>
+  M extends Models,
+  Q extends CollectionQuery<M, any>,
 >(
   query: Q,
   options: FetchFromStorageOptions,
-  pipelineItem: QueryPipelineData,
+  entity: Entity,
   filter: FilterStatement<M, Q['collectionName']>
 ) {
   const { collectionName } = query;
   const { schema } = options;
-  const { entity } = pipelineItem;
   const [path, op, filterValue] = filter;
   const dataType = schema
     ? getAttributeFromSchema(path.split('.'), schema, collectionName)
     : undefined;
   // If we have a schema handle specific cases
   if (dataType && dataType.type === 'set') {
-    return satisfiesSetFilter(
-      entity,
-      path,
-      // @ts-expect-error
-      op,
-      filterValue
-    );
+    return satisfiesSetFilter(entity.data, path, op, filterValue);
   }
   // Use register as default
-  return satisfiesRegisterFilter(
-    entity,
-    path,
-    // @ts-expect-error
-    op,
-    filterValue
-  );
+  return satisfiesRegisterFilter(entity.data, path, op, filterValue);
 }
 
-// TODO: this should probably go into the set defintion
-// TODO: handle possible errors with sets
 export function satisfiesSetFilter(
-  entity: any,
+  data: Record<string, any>,
   path: string,
   op: Operator,
   filterValue: any
 ) {
   const pointer = '/' + path.replaceAll('.', '/');
-  const value: Record<string, [boolean, Timestamp]> = EntityPointer.Get(
-    entity,
-    pointer
-  );
-  // We dont really support "deleting" sets, but they can appear deleted if the entity is deleted
-  // Come back to this after refactoring triple reducer to handle nested data betters
-  if (Array.isArray(value)) {
-    // indicates set is deleted
-    if (value[0] === undefined) {
-      return false;
-    }
-  }
-
-  const setData = timestampedObjectToPlainObject(value);
-  if (!setData) return false;
-  const filteredSet = Object.entries(setData).filter(([_v, inSet]) => inSet);
+  const setData: Record<string, boolean> = ValuePointer.Get(data, pointer);
   if (op === 'has') {
+    if (!setData) return false;
+    const filteredSet = Object.entries(setData).filter(([_v, inSet]) => inSet);
     return filteredSet.some(([v]) => v === filterValue);
-  }
-  if (op === '!has') {
+  } else if (op === '!has') {
+    if (!setData) return true;
+    const filteredSet = Object.entries(setData).filter(([_v, inSet]) => inSet);
     return filteredSet.every(([v]) => v !== filterValue);
+  } else if (op === 'isDefined') {
+    return filterValue ? setData !== undefined : setData === undefined;
+  } else {
+    if (!setData) return false;
+    const filteredSet = Object.entries(setData).filter(([_v, inSet]) => inSet);
+    return filteredSet.some(([v]) => isOperatorSatisfied(op, v, filterValue));
   }
-
-  return filteredSet.some(([v]) => isOperatorSatisfied(op, v, filterValue));
 }
 
 export function satisfiesRegisterFilter(
-  entity: any,
+  data: Record<string, any>,
   path: string,
   op: Operator,
   filterValue: any
 ) {
-  const maybeValue = EntityPointer.Get(entity, '/' + path.replaceAll('.', '/'));
-
-  // maybeValue is expected to be of shape [value, timestamp]
-  // this may happen if a schema is expected but not there and we're reading a value that cant be parsed, the schema is incorrect somehow, or if the provided path is incorrect
-  const isTimestampedValue =
-    !!maybeValue && maybeValue instanceof Array && maybeValue.length === 2;
-  const isTerminalValue =
-    !!maybeValue &&
-    isTimestampedValue &&
-    (typeof maybeValue[0] !== 'object' || maybeValue[0] === null);
-  if (!!maybeValue && (!isTimestampedValue || !isTerminalValue)) {
-    console.warn(
-      `Received an unexpected value at path '${path}' in entity ${JSON.stringify(
-        entity
-      )} which could not be interpreted as a register when reading filter ${JSON.stringify(
-        [path, op, filterValue]
-      )}. This is likely caused by (1) the database not properly loading its schema and attempting to interpret a value that is not a regsiter as a register, (2) a schemaless database attempting to interpret a value that is not properly formatted as a register, or (3) a query with a path that does not lead to a leaf attribute in the entity.`
-    );
-    return false;
-  }
-  const [value, _ts] = maybeValue ?? [undefined, undefined];
+  const value = ValuePointer.Get(data, '/' + path.replaceAll('.', '/'));
   return isOperatorSatisfied(op, value, filterValue);
 }
 
@@ -241,12 +184,24 @@ function isOperatorSatisfied(op: Operator, value: any, filterValue: any) {
     case '!=':
       return value !== filterValue;
     case '>':
+      // Null is not greater than anything
+      if (value === null) return false;
+      // Null is less than everything
+      if (filterValue === null) return true;
       return value > filterValue;
     case '>=':
+      if (value === null) return filterValue === null;
+      if (filterValue === null) return true;
       return value >= filterValue;
     case '<':
+      // Null is not less than anything
+      if (filterValue === null) return false;
+      // Null is less than everything
+      if (value === null) return true;
       return value < filterValue;
     case '<=':
+      if (filterValue === null) return value === null;
+      if (value === null) return true;
       return value <= filterValue;
 
     //TODO: move regex initialization outside of the scan loop to improve performance
@@ -258,6 +213,9 @@ function isOperatorSatisfied(op: Operator, value: any, filterValue: any) {
       return new Set(filterValue).has(value);
     case 'nin':
       return !new Set(filterValue).has(value);
+
+    case 'isDefined':
+      return filterValue ? value !== undefined : value === undefined;
     default:
       throw new InvalidFilterError(`The operator ${op} is not recognized.`);
   }
@@ -279,43 +237,57 @@ function ilike(text: string, pattern: string): boolean {
   return regex.test(text);
 }
 
-// TODO: would be safest to have a way to determine if a filter is basic, otherwise return 'unknown' (or fail)
 function determineFilterType(
   filter: WhereFilter<any, any>
-): 'basic' | 'relational' {
-  if (isSubQueryFilter(filter)) {
-    return 'relational';
-  }
-  if (isFilterGroup(filter)) {
-    const { filters } = filter;
-    const groupingTypes = filters.map((f) => determineFilterType(f));
-    if (groupingTypes.includes('relational')) {
-      return 'relational';
-    }
-  }
-  return 'basic';
+): 'boolean' | 'basic' | 'group' | 'relational' {
+  if (isFilterStatement(filter)) return 'basic';
+  if (isSubQueryFilter(filter)) return 'relational';
+  if (isFilterGroup(filter)) return 'group';
+  if (isBooleanFilter(filter)) return 'boolean';
+  throw new InvalidFilterError(
+    `Filter type could not be determined: ${JSON.stringify(filter)}`
+  );
 }
 
 /**
  * Based on the type of filter, determine its priority in execution
+ * 1. Boolean filters
+ * 2. Basic filters
+ * 3. Group filters (which are then ordered by their own priority)
+ * 4. Relational filters (subqueries, will take the longest to execute)
  */
-export function getFilterPriorityOrder<
-  M extends Models<any, any> | undefined,
-  Q extends CollectionQuery<M, any>
->(query: Q): number[] {
-  const { where = [] } = query;
+export function getFilterPriorityOrder(
+  where: CollectionQuery<any, any>['where']
+): number[] {
+  if (!where) return [];
   const basicFilters = [];
+  const booleanFilters = [];
+  const groupFilters = [];
   const relationalFilters = [];
 
   for (let i = 0; i < where.length; i++) {
     const filter = where[i];
     const filterType = determineFilterType(filter);
-    if (filterType === 'relational') {
-      relationalFilters.push(i);
-    } else {
-      basicFilters.push(i);
+    switch (filterType) {
+      case 'boolean':
+        booleanFilters.push(i);
+        break;
+      case 'basic':
+        basicFilters.push(i);
+        break;
+      case 'group':
+        groupFilters.push(i);
+        break;
+      case 'relational':
+        relationalFilters.push(i);
+        break;
     }
   }
 
-  return [...basicFilters, ...relationalFilters];
+  return [
+    ...booleanFilters,
+    ...basicFilters,
+    ...groupFilters,
+    ...relationalFilters,
+  ];
 }

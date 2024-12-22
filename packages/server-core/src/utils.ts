@@ -1,12 +1,15 @@
 import { TripleRow, DB, Models, TriplitError } from '@triplit/db';
 
 export function groupTriplesByTimestamp(triples: TripleRow[]) {
-  return triples.reduce((acc, triple) => {
-    const txId = getTxId(triple);
-    if (!acc[txId]) acc[txId] = [];
-    acc[txId].push(triple);
-    return acc;
-  }, {} as Record<string, TripleRow[]>);
+  return triples.reduce(
+    (acc, triple) => {
+      const txId = getTxId(triple);
+      if (!acc[txId]) acc[txId] = [];
+      acc[txId].push(triple);
+      return acc;
+    },
+    {} as Record<string, TripleRow[]>
+  );
 }
 
 // Return a stringified version of the timestamp
@@ -15,7 +18,7 @@ function getTxId(triple: TripleRow): string {
 }
 
 export async function insertTriplesByTransaction(
-  db: DB<Models<any, any> | undefined>,
+  db: DB,
   triplesByTransaction: Record<string, TripleRow[]>,
   skipRules = false
 ): Promise<{

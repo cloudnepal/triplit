@@ -15,10 +15,14 @@ import { TriplitError } from '@triplit/db';
 import { seedDirExists } from './create.js';
 import ora from 'ora';
 import { projectSchemaMiddleware } from '../../middleware/project-schema.js';
+import { SourceMapConsumer } from 'source-map';
 
 export async function loadSeedModule(seedPath: string) {
-  const module = await loadTsModule(seedPath);
-  return module.default as () => Promise<BulkInsert<any>>;
+  const { mod: module, sourceMap } = await loadTsModule(seedPath, true);
+  return {
+    seedMod: module.default as () => Promise<BulkInsert<any>>,
+    sourceMap,
+  };
 }
 
 export default Command({
@@ -40,15 +44,6 @@ export default Command({
     await insertSeeds(ctx.url, ctx.token, args.file, flags.all, ctx.schema);
   },
 });
-
-function logError(e: Error | TriplitError) {
-  if (e instanceof TriplitError) {
-    console.error(red(e.baseMessage));
-    e.contextMessage && console.error(red(e.contextMessage));
-  } else {
-    console.error(red(e.message));
-  }
-}
 
 export async function insertSeeds(
   url: string,
@@ -92,8 +87,18 @@ export async function insertSeeds(
       if (fs.existsSync(file)) {
         seeds = [file];
       } else {
-        console.log('File not found');
-        return;
+        console.error(red('\nUnable to find seed file:\n\n' + file));
+        allSeeds.length > 0 &&
+          console.error(
+            `\nAvailable seed files in /triplit/seeds:\n\n\t` +
+              allSeeds.map((f) => path.basename(f)).join('\n\t')
+          );
+        console.error(
+          `\nIf you want to create a new seed file, run\n\n\t${blue(
+            '`npx triplit seed create`'
+          )}\n`
+        );
+        process.exit(1);
       }
     }
   } else if (allSeeds.length > 0) {
@@ -116,13 +121,15 @@ export async function insertSeeds(
     return;
   }
   const client = new HttpClient({
-    server: url,
+    serverUrl: url,
     token: token,
     schema,
   });
   for (const seed of seeds) {
-    const seedFn = await loadSeedModule(seed);
+    const { seedMod: seedFn, sourceMap } = await loadSeedModule(seed);
     if (seedFn) {
+      // console.dir(sourceMap, { depth: 10 });
+      // return;
       const spinner = ora(`Uploading seed: ${path.basename(seed)}`).start();
       try {
         const response = await client.bulkInsert(await seedFn());
@@ -141,7 +148,58 @@ export async function insertSeeds(
         }
       } catch (e) {
         spinner.fail(`Failed to seed with ${path.basename(seed)}`);
-        logError(e);
+
+        // maps the error stack trace to the original source code
+        const tempFileLocation = path.join(path.dirname(seed), '.temp');
+
+        // only include the stack trace lines that are relevant to the temp file
+        // that the seed script runs
+        const splitStack = e.stack.split('\n');
+        const relevantStackFrames = splitStack.filter((line: string, i) =>
+          line.includes('.temp')
+        ) as string[];
+
+        // if there are no frames from the temp file, assume this is
+        // a triplit error and throw it for debugging purposes
+        if (relevantStackFrames.length === 0) {
+          console.error(e);
+          return;
+        }
+
+        const positions = relevantStackFrames
+          .map((line: string) => line.split(':').slice(-2))
+          .map((position: [string, string]) => ({
+            line: position[0],
+            column: position[1].replaceAll(')', ''),
+          }));
+        let newTrace;
+
+        // use the source map to get the original source code location and name
+        await SourceMapConsumer.with(sourceMap, undefined, async (consumer) => {
+          const originalPositions = [];
+          for (const position of positions) {
+            const originalPosition = consumer.originalPositionFor({
+              line: Number(position.line),
+              column: Number(position.column),
+            });
+            originalPositions.push(originalPosition);
+          }
+          const parensRegex = /\(.*\)/;
+
+          newTrace = [
+            // the first line of the stack trace is the error message
+            splitStack[0],
+            ...originalPositions.map((pos, i) =>
+              relevantStackFrames[i].replace(
+                parensRegex,
+                `(file://${path.resolve(tempFileLocation, pos.source)}:${
+                  pos.line
+                }:${pos.column})`
+              )
+            ),
+          ].join('\n');
+        });
+        console.error(red(newTrace));
       }
     }
   }

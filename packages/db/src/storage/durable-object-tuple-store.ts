@@ -21,8 +21,8 @@ export default class DurableObjectStore implements AsyncTupleStorageApi {
     const lowerLimit = args?.gte
       ? { start: encodeTuple(args.gte) }
       : args?.gt
-      ? { startAfter: encodeTuple(args.gt) }
-      : undefined;
+        ? { startAfter: encodeTuple(args.gt) }
+        : undefined;
     const upperLimit = args?.lte ?? args?.lt;
     const items = await this.doStore.list({
       ...lowerLimit,
@@ -61,6 +61,11 @@ export default class DurableObjectStore implements AsyncTupleStorageApi {
       });
     }
   }
+
+  async clear(): Promise<void> {
+    await this.doStore.deleteAll();
+  }
+
   async close(): Promise<void> {}
 }
 
